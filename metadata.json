@@ -1,0 +1,6 @@
+{
+  "name": "CoinMarketCap Bot Control Panel",
+  "description": "An automated CoinMarketCap Community Bot Control Panel to fetch trending coins, generate human-like community comments using OpenAI gpt-4o-mini, and manage posting sequences with live logging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
