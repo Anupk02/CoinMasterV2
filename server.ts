@@ -1,6 +1,10 @@
-import express from "express";
 import path from "path";
 import fs from "fs";
+
+// Configure Playwright to use a consistent local cache directory inside the project folder
+process.env.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || path.join(process.cwd(), ".cache", "ms-playwright");
+
+import express from "express";
 import { createServer as createViteServer } from "vite";
 import OpenAI from "openai";
 import dotenv from "dotenv";
