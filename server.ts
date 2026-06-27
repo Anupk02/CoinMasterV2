@@ -54,6 +54,29 @@ function addLog(level: "info" | "success" | "warning" | "error", message: string
 addLog("info", "CoinMarketCap Bot Server initialized.");
 addLog("info", "Ready to process trending coins and execute automation.");
 
+// Auto-initialize auth/state.json if missing, or update from env var
+if (process.env.AUTH_STATE_JSON) {
+  addLog("info", "Detected AUTH_STATE_JSON environment variable. Syncing session storage state...");
+  try {
+    const parsed = JSON.parse(process.env.AUTH_STATE_JSON);
+    fs.writeFileSync(AUTH_STATE_FILE, JSON.stringify(parsed, null, 2), "utf-8");
+    addLog("success", "Successfully initialized auth/state.json from AUTH_STATE_JSON environment variable!");
+  } catch (err) {
+    addLog("error", `Failed to parse AUTH_STATE_JSON environment variable: ${(err as Error).message}`);
+  }
+} else if (!fs.existsSync(AUTH_STATE_FILE)) {
+  addLog("warning", "auth/state.json does not exist. Initializing empty storage state...");
+  try {
+    const defaultState = { cookies: [], origins: [] };
+    fs.writeFileSync(AUTH_STATE_FILE, JSON.stringify(defaultState, null, 2), "utf-8");
+    addLog("success", "Successfully initialized empty auth/state.json storage state. Please upload active session cookies.");
+  } catch (err) {
+    addLog("error", `Failed to initialize empty auth/state.json: ${(err as Error).message}`);
+  }
+} else {
+  addLog("info", "Found existing auth/state.json session storage state.");
+}
+
 // Interfaces
 interface Coin {
   name: string;

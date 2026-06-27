@@ -1136,6 +1136,11 @@ export default function App() {
                   3. Paste the complete JSON object below.
                 </div>
 
+                <div className="p-3 bg-indigo-950/40 border border-indigo-900/50 rounded-lg space-y-1 text-[11px] leading-relaxed text-indigo-300">
+                  <span className="font-bold text-white flex items-center gap-1">💡 Persistent Render Deployments:</span>
+                  Render containers reset local files on each redeployment or restart. To persist your login session permanently, add an Environment Variable on Render with Key <code className="bg-indigo-950 px-1 py-0.5 rounded text-white font-mono font-bold">AUTH_STATE_JSON</code> and paste this complete JSON string as the Value!
+                </div>
+
                 <div className="space-y-1.5">
                   <label className="text-[11px] uppercase text-slate-400 font-mono tracking-widest font-bold">Paste state.json content</label>
                   <textarea
