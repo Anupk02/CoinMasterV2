@@ -10,7 +10,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 dotenv.config({ override: true });
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 const OUTPUT_DIR = path.join(process.cwd(), "output");
 const AUTH_DIR = path.join(process.cwd(), "auth");
