@@ -187,25 +187,10 @@ async function checkLoginReal(): Promise<{ status: "success" | "expired" | "capt
 
     const page = await context.newPage();
 
-    // Optimize page loading speed and memory by 80%+ by blocking heavy images, media, fonts, and trackers
+    // Optimize page loading speed and memory by 80%+ by blocking heavy images, media, and fonts safely
     await page.route("**/*", (route: any, request: any) => {
       const type = request.resourceType();
-      const reqUrl = request.url();
-      if (
-        type === "image" ||
-        type === "media" ||
-        type === "font" ||
-        reqUrl.includes("google-analytics") ||
-        reqUrl.includes("googletagmanager") ||
-        reqUrl.includes("amplitude") ||
-        reqUrl.includes("sentry") ||
-        reqUrl.includes("facebook") ||
-        reqUrl.includes("doubleclick") ||
-        reqUrl.includes("ads") ||
-        reqUrl.includes("adnxs") ||
-        reqUrl.includes("hotjar") ||
-        reqUrl.includes("mixpanel")
-      ) {
+      if (type === "image" || type === "media" || type === "font") {
         route.abort();
       } else {
         route.continue();
@@ -280,6 +265,25 @@ async function checkLoginReal(): Promise<{ status: "success" | "expired" | "capt
       return { status: "expired", message: "Comment editor input missing or session inactive" };
     }
     
+    // Verify if there is a prominent "Log In" or "Sign Up" button on the page or inside the post section
+    const loginButton = await page.$('button:has-text("Log In"), button:has-text("Sign Up")');
+    const postButton = await page.$('[data-test="editor-post-button"], button:has-text("Post")');
+    
+    if (loginButton && !postButton) {
+      addLog("error", "Login validation failed: Guest editor visible, but user is logged out.");
+      await saveDebugScreenshot(page, "guest_editor_logged_out");
+      return { status: "expired", message: "Logged out (Log In button visible)" };
+    }
+    
+    if (postButton) {
+      const btnText = await postButton.innerText().catch(() => "");
+      if (btnText.toLowerCase().includes("log in") || btnText.toLowerCase().includes("signin")) {
+        addLog("error", "Login validation failed: Post button says 'Log In'. User is logged out.");
+        await saveDebugScreenshot(page, "post_btn_says_login");
+        return { status: "expired", message: "Logged out (Post button says Log In)" };
+      }
+    }
+
     addLog("success", "Successfully found and verified comment editor element!");
     addLog("success", "Session active! Authentication is fully verified.");
     return { status: "success", message: "Session active" };
@@ -293,31 +297,6 @@ async function checkLoginReal(): Promise<{ status: "success" | "expired" | "capt
 
 async function runRealPostingWithPage(page: any, url: string, message: string): Promise<{ status: "success" | "expired" | "captcha" | "failed" | "retry"; message: string }> {
   try {
-    // Optimize page loading speed and memory by 80%+ by blocking heavy images, media, fonts, and trackers
-    await page.route("**/*", (route: any, request: any) => {
-      const type = request.resourceType();
-      const reqUrl = request.url();
-      if (
-        type === "image" ||
-        type === "media" ||
-        type === "font" ||
-        reqUrl.includes("google-analytics") ||
-        reqUrl.includes("googletagmanager") ||
-        reqUrl.includes("amplitude") ||
-        reqUrl.includes("sentry") ||
-        reqUrl.includes("facebook") ||
-        reqUrl.includes("doubleclick") ||
-        reqUrl.includes("ads") ||
-        reqUrl.includes("adnxs") ||
-        reqUrl.includes("hotjar") ||
-        reqUrl.includes("mixpanel")
-      ) {
-        route.abort();
-      } else {
-        route.continue();
-      }
-    }).catch(() => {});
-
     addLog("info", `Navigating to target coin URL: ${url}`);
     
     await page.goto(url, {
@@ -509,30 +488,15 @@ async function runRealPosting(url: string, message: string): Promise<{ status: "
 
     const page = await context.newPage();
 
-    // Optimize page loading speed and memory by 80%+ by blocking heavy images, media, fonts, and trackers
+    // Optimize page loading speed and memory by 80%+ by blocking heavy images, media, and fonts safely
     await page.route("**/*", (route: any, request: any) => {
       const type = request.resourceType();
-      const reqUrl = request.url();
-      if (
-        type === "image" ||
-        type === "media" ||
-        type === "font" ||
-        reqUrl.includes("google-analytics") ||
-        reqUrl.includes("googletagmanager") ||
-        reqUrl.includes("amplitude") ||
-        reqUrl.includes("sentry") ||
-        reqUrl.includes("facebook") ||
-        reqUrl.includes("doubleclick") ||
-        reqUrl.includes("ads") ||
-        reqUrl.includes("adnxs") ||
-        reqUrl.includes("hotjar") ||
-        reqUrl.includes("mixpanel")
-      ) {
+      if (type === "image" || type === "media" || type === "font") {
         route.abort();
       } else {
         route.continue();
       }
-    });
+    }).catch(() => {});
 
     addLog("info", `Navigating to target coin URL: ${url}`);
     
@@ -1526,6 +1490,16 @@ async function runPostingLoop() {
       });
       
       page = await context.newPage();
+
+      // Optimize page loading speed and memory by 80%+ by blocking heavy images, media, and fonts safely
+      await page.route("**/*", (route: any, request: any) => {
+        const type = request.resourceType();
+        if (type === "image" || type === "media" || type === "font") {
+          route.abort();
+        } else {
+          route.continue();
+        }
+      }).catch(() => {});
     } catch (err) {
       addLog("error", `Failed to initialize Playwright browser: ${(err as Error).message}`);
       isPostingRunning = false;
