@@ -301,13 +301,41 @@ async function runRealPostingWithPage(page: any, url: string, message: string): 
     
     await page.goto(url, {
       waitUntil: "domcontentloaded",
-      timeout: 30000
+      timeout: 40000
     });
     
-    // Wait for the page to settle down
-    await page.waitForTimeout(1000);
-    
-    // Scan page for the comment editor by scrolling down gradually
+    // Wait for the page to settle down (random delay like random_page_wait in Python)
+    const pageWaitTime = Math.floor(1200 + Math.random() * 1000);
+    await page.waitForTimeout(pageWaitTime);
+
+    // Redirect or logout check
+    const currentUrl = page.url().toLowerCase();
+    if (currentUrl.includes("login")) {
+      addLog("error", "Redirected to login page during posting.");
+      return { status: "expired", message: "Redirected to login" };
+    }
+
+    // Captcha Detection on page text (just like the Python script does)
+    const pageText = (await page.locator("body").innerText().catch(() => "")).toLowerCase();
+    const captchaKeywords = [
+      "captcha",
+      "verify you are human",
+      "security check",
+      "cloudflare",
+      "challenge",
+      "checking your browser",
+      "attention required",
+      "please verify",
+      "are you a robot"
+    ];
+    for (const word of captchaKeywords) {
+      if (pageText.includes(word)) {
+        addLog("error", `Captcha keyword detected: "${word}"`);
+        return { status: "captcha", message: "Captcha detected" };
+      }
+    }
+
+    // Editor Locators
     let editor = null;
     const editorSelectors = [
       '[data-test="base-editor-editable"]',
@@ -319,19 +347,31 @@ async function runRealPostingWithPage(page: any, url: string, message: string): 
     ];
 
     addLog("info", "Scanning page for comment editor...");
-    for (let scrollStep = 0; scrollStep < 5; scrollStep++) {
-      for (const selector of editorSelectors) {
-        editor = await page.$(selector);
-        if (editor) {
-          addLog("info", `Located comment editor using selector: ${selector}`);
-          break;
-        }
-      }
-      if (editor) break;
+    for (const selector of editorSelectors) {
+      try {
+        const el = page.locator(selector);
+        await el.waitFor({ state: "visible", timeout: 1500 });
+        editor = el;
+        addLog("info", `Located comment editor immediately using locator: ${selector}`);
+        break;
+      } catch (err) {}
+    }
 
-      addLog("info", `Scroll step ${scrollStep + 1}: Editor not found. Scrolling 600px...`);
-      await page.evaluate(() => window.scrollBy(0, 600));
-      await page.waitForTimeout(600);
+    if (!editor) {
+      addLog("info", "Comment editor not visible immediately. Performing mouse wheel scroll like in Python...");
+      const scrollY = Math.floor(200 + Math.random() * 400); // 200px to 600px scroll
+      await page.mouse.wheel(0, scrollY);
+      await page.waitForTimeout(300 + Math.floor(Math.random() * 400)); // 300 to 700 ms pause
+
+      for (const selector of editorSelectors) {
+        try {
+          const el = page.locator(selector);
+          await el.waitFor({ state: "visible", timeout: 3000 });
+          editor = el;
+          addLog("info", `Located comment editor after scrolling using: ${selector}`);
+          break;
+        } catch (err) {}
+      }
     }
 
     if (!editor) {
@@ -346,7 +386,7 @@ async function runRealPostingWithPage(page: any, url: string, message: string): 
         return { status: "captcha", message: "Cloudflare Turnstile captcha block" };
       }
 
-      const loginBtn = await page.$('button:has-text("Log In"), button:has-text("Sign Up")');
+      const loginBtn = await page.$('button:has-text("Log In"), button:has-text("Sign Up")').catch(() => null);
       if (loginBtn) {
         addLog("error", "Session expired or logged out. Post button/editor is missing.");
         return { status: "expired", message: "Not logged in - Session expired" };
@@ -355,28 +395,27 @@ async function runRealPostingWithPage(page: any, url: string, message: string): 
       addLog("error", "Could not locate the post comment editor input box on the page.");
       return { status: "failed", message: "Comment editor element not found on coin page" };
     }
-    
-    // Try to fill the editor directly using Playwright's native .fill() which is contenteditable-safe
-    try {
-      addLog("info", "Attempting direct fill on comment editor...");
-      await editor.fill(message, { timeout: 3000 });
-    } catch (err) {
-      addLog("warning", `Direct fill failed: ${(err as Error).message}. Falling back to click & type...`);
-      // Focus and click
-      try {
-        await editor.focus({ timeout: 1500 });
-      } catch (_) {}
-      await clickResiliently(page, editor, "comment editor input box");
-      await page.waitForTimeout(300);
-      
-      // Clear existing text just in case, then type
-      await page.keyboard.press("Control+A");
-      await page.keyboard.press("Backspace");
-      await page.keyboard.type(message, { delay: 10 });
-    }
-    await page.waitForTimeout(300);
-    
-    // Find and toggle Bullish sentiment
+
+    addLog("info", "Focusing and clicking comment editor...");
+    // Use force: true to bypass any covered actionability checks/overlays perfectly
+    await editor.click({ force: true, timeout: 5000 }).catch(async (clickErr: any) => {
+      addLog("warning", `Standard force click failed: ${clickErr.message}. Trying dispatchEvent fallback.`);
+      await editor.evaluate((el: any) => el.click()).catch(() => {});
+    });
+
+    await page.waitForTimeout(400);
+
+    addLog("info", "Clearing existing text and typing message...");
+    await page.keyboard.press("Control+A");
+    await page.keyboard.press("Backspace");
+    await page.waitForTimeout(200);
+
+    // Calculate typing delay like Python script's random_typing_delay() (32 to 80 ms)
+    const typingDelay = Math.floor(32 + Math.random() * 48);
+    await page.keyboard.type(message, { delay: typingDelay });
+    await page.waitForTimeout(400);
+
+    // Bullish Sentiment Button Selection
     const bullishSelectors = [
       '[data-test="editor-bullish-button"]',
       'button:has-text("Bullish")',
@@ -386,19 +425,25 @@ async function runRealPostingWithPage(page: any, url: string, message: string): 
     ];
     let bullishBtn = null;
     for (const selector of bullishSelectors) {
-      bullishBtn = await page.$(selector);
-      if (bullishBtn) {
+      const btn = page.locator(selector);
+      const count = await btn.count().catch(() => 0);
+      if (count > 0) {
+        bullishBtn = btn;
         addLog("info", `Found bullish sentiment toggle using: ${selector}`);
         break;
       }
     }
     if (bullishBtn) {
       addLog("info", "Clicking bullish sentiment toggle...");
-      await clickResiliently(page, bullishBtn, "bullish sentiment toggle button");
+      await bullishBtn.click({ force: true, timeout: 3000 }).catch(async (err: any) => {
+        addLog("warning", `Failed to click bullish toggle: ${err.message}. Trying evaluate click.`);
+        await bullishBtn.evaluate((el: any) => el.click()).catch(() => {});
+      });
       await page.waitForTimeout(300);
     }
-    
-    // Find Post submit button
+
+    // Locate Submit/Post Button
+    addLog("info", "Locating Post submit button...");
     const postButtonSelectors = [
       '[data-test="editor-post-button"]',
       'button:has-text("Post")',
@@ -409,8 +454,10 @@ async function runRealPostingWithPage(page: any, url: string, message: string): 
     ];
     let postBtn = null;
     for (const selector of postButtonSelectors) {
-      postBtn = await page.$(selector);
-      if (postBtn) {
+      const btn = page.locator(selector);
+      const count = await btn.count().catch(() => 0);
+      if (count > 0) {
+        postBtn = btn;
         addLog("info", `Found submit button using: ${selector}`);
         break;
       }
@@ -421,27 +468,65 @@ async function runRealPostingWithPage(page: any, url: string, message: string): 
       await saveDebugScreenshot(page, "post_button_missing");
       return { status: "failed", message: "Post submission button missing" };
     }
-    
+
+    // Verify session state on the post button
     const buttonText = await postBtn.innerText().catch(() => "");
     if (buttonText.toLowerCase().includes("log in") || buttonText.toLowerCase().includes("signin")) {
       addLog("error", "Post button indicates user is logged out.");
       await saveDebugScreenshot(page, "logged_out_post_btn");
       return { status: "expired", message: "Post button text is Log In" };
     }
-    
+
+    // Human-like mouse movement prior to submit (like page.mouse.move in Python)
+    const mouseX = Math.floor(300 + Math.random() * 600);
+    const mouseY = Math.floor(200 + Math.random() * 400);
+    await page.mouse.move(mouseX, mouseY).catch(() => {});
+    await page.waitForTimeout(200 + Math.floor(Math.random() * 500));
+
     addLog("info", "Clicking post submission button...");
-    await clickResiliently(page, postBtn, "post submission button");
-    
-    // Wait for submission to process
-    await page.waitForTimeout(2000);
-    
-    const bodyTextAfter = await page.innerText("body").catch(() => "");
-    if (bodyTextAfter.toLowerCase().includes("frequent") || bodyTextAfter.toLowerCase().includes("too fast") || bodyTextAfter.toLowerCase().includes("rate limit") || bodyTextAfter.toLowerCase().includes("seconds before")) {
-      addLog("warning", "Rate limit warning detected after clicking post button.");
-      await saveDebugScreenshot(page, "rate_limited_submission");
-      return { status: "retry", message: "Rate limited on submission" };
+    await postBtn.click({ force: true, timeout: 5000 }).catch(async (clickErr: any) => {
+      addLog("warning", `Standard click on submit button failed: ${clickErr.message}. Trying evaluate click.`);
+      await postBtn.evaluate((el: any) => el.click()).catch(() => {});
+    });
+
+    // Wait after submit (random_post_wait in Python script, 2000 to 3500 ms)
+    const postWait = Math.floor(2000 + Math.random() * 1500);
+    await page.waitForTimeout(postWait);
+
+    const bodyTextAfter = (await page.locator("body").innerText().catch(() => "")).toLowerCase();
+
+    // Captcha re-detection after click
+    for (const word of captchaKeywords) {
+      if (bodyTextAfter.includes(word)) {
+        addLog("error", `Captcha detected after clicking post button: "${word}"`);
+        return { status: "captcha", message: "Captcha detected on submission" };
+      }
     }
-    
+
+    // Login expired re-detection
+    if (bodyTextAfter.includes("log in") || bodyTextAfter.includes("sign up")) {
+      addLog("error", "Session expired after submission.");
+      return { status: "expired", message: "Session expired on submission" };
+    }
+
+    // Rate limit re-detection
+    const rateLimitKeywords = [
+      "too many requests",
+      "try again later",
+      "please wait",
+      "rate limit",
+      "frequent",
+      "too fast",
+      "seconds before"
+    ];
+    for (const word of rateLimitKeywords) {
+      if (bodyTextAfter.includes(word)) {
+        addLog("warning", `Rate limit warning detected: "${word}"`);
+        await saveDebugScreenshot(page, "rate_limited_submission");
+        return { status: "retry", message: "Rate limited on submission" };
+      }
+    }
+
     addLog("success", "Successfully submitted post via Playwright browser context!");
     await saveDebugScreenshot(page, "success_post_screenshot");
     return { status: "success", message: "Posted successfully" };
@@ -498,154 +583,8 @@ async function runRealPosting(url: string, message: string): Promise<{ status: "
       }
     }).catch(() => {});
 
-    addLog("info", `Navigating to target coin URL: ${url}`);
-    
-    await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: 30000
-    });
-    
-    // Wait for the page to settle
-    await page.waitForTimeout(1000);
-    
-    // Scan page for the comment editor by scrolling down gradually
-    let editor = null;
-    const editorSelectors = [
-      '[data-test="base-editor-editable"]',
-      'div[contenteditable="true"]',
-      '.public-DraftEditor-content',
-      'textarea[placeholder*="thoughts"]',
-      'textarea[placeholder*="comment"]',
-      '[placeholder*="thoughts"]'
-    ];
-
-    addLog("info", "Scanning page for comment editor...");
-    for (let scrollStep = 0; scrollStep < 5; scrollStep++) {
-      for (const selector of editorSelectors) {
-        editor = await page.$(selector);
-        if (editor) {
-          addLog("info", `Located comment editor using selector: ${selector}`);
-          break;
-        }
-      }
-      if (editor) break;
-
-      addLog("info", `Scroll step ${scrollStep + 1}: Editor not found. Scrolling 600px...`);
-      await page.evaluate(() => window.scrollBy(0, 600));
-      await page.waitForTimeout(600);
-    }
-
-    if (!editor) {
-      await saveDebugScreenshot(page, "posting_editor_not_found");
-      
-      const title = await page.title().catch(() => "");
-      const hasCfTitle = title.includes("Cloudflare") || title.includes("Just a moment");
-      const hasCfSelectors = await page.$('#challenge-running, #challenge-stage, .cf-turnstile').catch(() => null);
-      
-      if (hasCfTitle || hasCfSelectors) {
-        addLog("error", "CRITICAL: Cloudflare Turnstile human challenge detected on posting page!");
-        return { status: "captcha", message: "Cloudflare Turnstile captcha block" };
-      }
-
-      const loginBtn = await page.$('button:has-text("Log In"), button:has-text("Sign Up")');
-      if (loginBtn) {
-        addLog("error", "Session expired or logged out. Post button/editor is missing.");
-        return { status: "expired", message: "Not logged in - Session expired" };
-      }
-
-      addLog("error", "Could not locate the post comment editor input box on the page.");
-      return { status: "failed", message: "Comment editor element not found on coin page" };
-    }
-    
-    // Try to fill the editor directly using Playwright's native .fill() which is contenteditable-safe
-    try {
-      addLog("info", "Attempting direct fill on comment editor...");
-      await editor.fill(message, { timeout: 3000 });
-    } catch (err) {
-      addLog("warning", `Direct fill failed: ${(err as Error).message}. Falling back to click & type...`);
-      // Focus and click
-      try {
-        await editor.focus({ timeout: 1500 });
-      } catch (_) {}
-      await clickResiliently(page, editor, "comment editor input box");
-      await page.waitForTimeout(300);
-      
-      // Clear existing text just in case, then type
-      await page.keyboard.press("Control+A");
-      await page.keyboard.press("Backspace");
-      await page.keyboard.type(message, { delay: 10 });
-    }
-    await page.waitForTimeout(300);
-    
-    // Find and toggle Bullish sentiment
-    const bullishSelectors = [
-      '[data-test="editor-bullish-button"]',
-      'button:has-text("Bullish")',
-      'span:has-text("Bullish")',
-      '.bullish-button',
-      '[class*="bullish" i]'
-    ];
-    let bullishBtn = null;
-    for (const selector of bullishSelectors) {
-      bullishBtn = await page.$(selector);
-      if (bullishBtn) {
-        addLog("info", `Found bullish sentiment toggle using: ${selector}`);
-        break;
-      }
-    }
-    if (bullishBtn) {
-      addLog("info", "Clicking bullish sentiment toggle...");
-      await clickResiliently(page, bullishBtn, "bullish sentiment toggle button");
-      await page.waitForTimeout(300);
-    }
-    
-    // Find Post submit button
-    const postButtonSelectors = [
-      '[data-test="editor-post-button"]',
-      'button:has-text("Post")',
-      'button:has-text("Submit")',
-      'button:has-text("Comment")',
-      'button.editor-post-button',
-      '.editor-post-button'
-    ];
-    let postBtn = null;
-    for (const selector of postButtonSelectors) {
-      postBtn = await page.$(selector);
-      if (postBtn) {
-        addLog("info", `Found submit button using: ${selector}`);
-        break;
-      }
-    }
-
-    if (!postBtn) {
-      addLog("error", "Post submission button is missing on page.");
-      await saveDebugScreenshot(page, "post_button_missing");
-      return { status: "failed", message: "Post submission button missing" };
-    }
-    
-    const buttonText = await postBtn.innerText().catch(() => "");
-    if (buttonText.toLowerCase().includes("log in") || buttonText.toLowerCase().includes("signin")) {
-      addLog("error", "Post button indicates user is logged out.");
-      await saveDebugScreenshot(page, "logged_out_post_btn");
-      return { status: "expired", message: "Post button text is Log In" };
-    }
-    
-    addLog("info", "Clicking post submission button...");
-    await clickResiliently(page, postBtn, "post submission button");
-    
-    // Wait for submission to process
-    await page.waitForTimeout(3000);
-    
-    const bodyTextAfter = await page.innerText("body").catch(() => "");
-    if (bodyTextAfter.toLowerCase().includes("frequent") || bodyTextAfter.toLowerCase().includes("too fast") || bodyTextAfter.toLowerCase().includes("rate limit") || bodyTextAfter.toLowerCase().includes("seconds before")) {
-      addLog("warning", "Rate limit warning detected after clicking post button.");
-      await saveDebugScreenshot(page, "rate_limited_submission");
-      return { status: "retry", message: "Rate limited on submission" };
-    }
-    
-    addLog("success", "Successfully submitted post via Playwright browser context!");
-    await saveDebugScreenshot(page, "success_post_screenshot");
-    return { status: "success", message: "Posted successfully" };
+    // Delegate directly to our unified resilient page posting function
+    return await runRealPostingWithPage(page, url, message);
   } catch (error) {
     addLog("error", `Playwright posting execution failed: ${(error as Error).message}`);
     return { status: "failed", message: (error as Error).message };
@@ -941,79 +880,109 @@ async function executeFetchTrending(): Promise<Coin[]> {
         });
 
         addLog("info", "Waiting for trending list rows to load...");
-        await page.waitForSelector("tbody tr", { timeout: 10000 }).catch(() => {});
-        await page.waitForTimeout(2000); // Wait for animations or lazy images
+        await page.waitForSelector("tbody tr a[href*='/currencies/']", { timeout: 15000 });
+        await page.waitForTimeout(2000); // Wait for all data to settle
 
         const scraped: Coin[] = await page.evaluate(() => {
           const results: any[] = [];
           const rows = Array.from(document.querySelectorAll("tbody tr"));
           rows.forEach((row, index) => {
             try {
-              const rankText = row.querySelector("td:nth-child(2)")?.textContent?.trim() || String(index + 1);
+              const linkEl = row.querySelector("a[href*='/currencies/']");
+              if (!linkEl) return;
+
+              const href = linkEl.getAttribute("href") || "";
+              const parts = href.split("/");
+              const slug = parts[parts.indexOf("currencies") + 1] || "";
+              if (!slug) return;
+
+              // Extract rank
+              const rankText = row.querySelector("td:nth-child(2)")?.textContent?.trim() || "";
               const rank = parseInt(rankText) || (index + 1);
-              
-              const nameEl = row.querySelector(".coin-item-name, p[font-weight='semibold'], p[font-weight='bold']");
-              const symbolEl = row.querySelector(".coin-item-symbol, .crypto-symbol");
+
+              // Extract Name and Symbol
+              const nameEl = linkEl.querySelector(".base-text") || linkEl.querySelector("span:not(.sub-info)");
+              const symbolEl = row.querySelector(".sub-info, .coin-item-symbol, .crypto-symbol");
               
               let name = nameEl?.textContent?.trim() || "";
               let symbol = symbolEl?.textContent?.trim() || "";
               
-              const links = Array.from(row.querySelectorAll("a"));
-              let coinUrl = "";
-              let slug = "";
-              
-              for (const a of links) {
-                const href = a.getAttribute("href") || "";
-                if (href.includes("/currencies/")) {
-                  coinUrl = "https://coinmarketcap.com" + href;
-                  const parts = href.split("/");
-                  slug = parts[parts.indexOf("currencies") + 1] || "";
-                  break;
+              // Fallback parsing from full link text if needed
+              if (!name || !symbol) {
+                const fullText = linkEl.textContent?.replace("Buy", "").trim() || "";
+                if (fullText) {
+                  const match = fullText.match(/^(.+?)([A-Z]{2,10})$/);
+                  if (match) {
+                    if (!name) name = match[1];
+                    if (!symbol) symbol = match[2];
+                  } else {
+                    if (!name) name = fullText;
+                    if (!symbol) symbol = slug.toUpperCase();
+                  }
                 }
               }
-              
-              if (!name && slug) {
-                name = slug.charAt(0).toUpperCase() + slug.slice(1);
-              }
-              if (!symbol && slug) {
-                symbol = slug.toUpperCase();
-              }
-              
-              const priceText = row.querySelector("td:nth-child(4)")?.textContent?.trim() || "";
+
+              // Price (4th column)
+              const priceTd = row.querySelector("td:nth-child(4)");
+              const priceText = priceTd?.textContent?.trim() || "";
               const priceMatch = priceText.match(/\$?([0-9,.]+)/);
               const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, "")) : 0;
-              
-              const change24hText = row.querySelector("td:nth-child(5), td:nth-child(6)")?.textContent?.trim() || "";
-              const changeMatch = change24hText.match(/([0-9.-]+)%/);
-              let change24h = changeMatch ? parseFloat(changeMatch[1]) : 0;
-              const isDown = row.querySelector(".icon-Caret-down, td:nth-child(5) .icon-Caret-down") !== null;
-              if (isDown && change24h > 0) {
-                change24h = -change24h;
+
+              // 1h change (5th column)
+              const change1hTd = row.querySelector("td:nth-child(5)");
+              const change1hText = change1hTd?.textContent?.trim() || "";
+              const change1hMatch = change1hText.match(/([0-9.-]+)%/);
+              let change1h = change1hMatch ? parseFloat(change1hMatch[1]) : 0;
+              const is1hDown = change1hTd?.innerHTML.includes("caret-down") || change1hTd?.innerHTML.includes("down");
+              if (is1hDown && change1h > 0) change1h = -change1h;
+
+              // 24h change (6th column)
+              const change24hTd = row.querySelector("td:nth-child(6)");
+              const change24hText = change24hTd?.textContent?.trim() || "";
+              const change24hMatch = change24hText.match(/([0-9.-]+)%/);
+              let change24h = change24hMatch ? parseFloat(change24hMatch[1]) : 0;
+              const is24hDown = change24hTd?.innerHTML.includes("caret-down") || change24hTd?.innerHTML.includes("down");
+              if (is24hDown && change24h > 0) change24h = -change24h;
+
+              // Market Cap (7th column)
+              const capTd = row.querySelector("td:nth-child(7)");
+              const capText = capTd?.textContent?.trim() || "";
+              const capMatch = capText.match(/\$?([0-9,.]+)([KMBTr]?)/);
+              let market_cap = 0;
+              if (capMatch) {
+                market_cap = parseFloat(capMatch[1].replace(/,/g, ""));
+                const suffix = capMatch[2];
+                if (suffix === "T") market_cap *= 1000000000000;
+                else if (suffix === "B") market_cap *= 1000000000;
+                else if (suffix === "M") market_cap *= 1000000;
               }
-              
-              const capText = row.querySelector("td:nth-child(8)")?.textContent?.trim() || "";
-              const capMatch = capText.match(/\$?([0-9,.]+)/);
-              const market_cap = capMatch ? parseFloat(capMatch[1].replace(/,/g, "")) : 0;
-              
-              const volText = row.querySelector("td:nth-child(9)")?.textContent?.trim() || "";
-              const volMatch = volText.match(/\$?([0-9,.]+)/);
-              const volume_24h = volMatch ? parseFloat(volMatch[1].replace(/,/g, "")) : 0;
-              
-              if (name && symbol && slug) {
-                results.push({
-                  name,
-                  symbol: symbol.toUpperCase(),
-                  price: price || 0,
-                  change_24h: change24h || 0,
-                  change_1h: 0,
-                  change_7d: 0,
-                  market_cap: market_cap || 0,
-                  volume_24h: volume_24h || 0,
-                  cmc_rank: rank,
-                  slug,
-                  url: coinUrl || `https://coinmarketcap.com/currencies/${slug}/`
-                });
+
+              // Volume 24h (8th column)
+              const volTd = row.querySelector("td:nth-child(8)");
+              const volText = volTd?.textContent?.trim() || "";
+              const volMatch = volText.match(/\$?([0-9,.]+)([KMBTr]?)/);
+              let volume_24h = 0;
+              if (volMatch) {
+                volume_24h = parseFloat(volMatch[1].replace(/,/g, ""));
+                const suffix = volMatch[2];
+                if (suffix === "T") volume_24h *= 1000000000000;
+                else if (suffix === "B") volume_24h *= 1000000000;
+                else if (suffix === "M") volume_24h *= 1000000;
               }
+
+              results.push({
+                name,
+                symbol: symbol.toUpperCase(),
+                price: price || 0,
+                change_1h: change1h || 0,
+                change_24h: change24h || 0,
+                change_7d: 0,
+                market_cap: market_cap || 0,
+                volume_24h: volume_24h || 0,
+                cmc_rank: rank,
+                slug,
+                url: "https://coinmarketcap.com/currencies/" + slug + "/"
+              });
             } catch (err) {
               // Ignore row error
             }
@@ -1636,6 +1605,38 @@ async function runPostingLoop() {
         writeJsonFile(RESULTS_FILE, results);
         currentPostingIndex++;
         writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
+      } else if (outcome === "captcha") {
+        addLog("error", `CRITICAL: Captcha detected on ${item.symbol}. Pausing automated posting immediately so you can solve it. This coin will NOT be skipped.`);
+        
+        results.push({
+          name: item.name,
+          symbol: item.symbol,
+          url: item.url,
+          status: "captcha",
+          message: messageText,
+          timestamp: new Date().toLocaleTimeString(),
+        });
+        writeJsonFile(RESULTS_FILE, results);
+        
+        isPostingRunning = false;
+        botStatus = "Idle";
+        break;
+      } else if (outcome === "expired") {
+        addLog("error", `CRITICAL: Session expired (Not logged in) on ${item.symbol}. Pausing automated posting immediately. This coin will NOT be skipped.`);
+        
+        results.push({
+          name: item.name,
+          symbol: item.symbol,
+          url: item.url,
+          status: "expired",
+          message: messageText,
+          timestamp: new Date().toLocaleTimeString(),
+        });
+        writeJsonFile(RESULTS_FILE, results);
+        
+        isPostingRunning = false;
+        botStatus = "Idle";
+        break;
       } else {
         // Captcha, expired or failed
         consecutiveFailures++;
