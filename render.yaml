@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: cmc-posting-bot
+    env: docker
+    plan: free
+    region: oregon
+    envVars:
+      - key: PORT
+        value: "3000"
+      - key: GEMINI_API_KEY
+        sync: true
+      - key: OPENAI_API_KEY
+        sync: true
+      - key: CMC_API_KEY
+        sync: true
