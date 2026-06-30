@@ -77,12 +77,12 @@ export async function saveSessionStateCloud(stateJson: string): Promise<void> {
 
 // Trending Coins Sync
 export async function getTrendingCoinsCloud(): Promise<any[]> {
-  const data = await fetchDoc("bot/coins", { list: [] });
+  const data = await fetchDoc("coins/trending", { list: [] });
   return data.list;
 }
 
 export async function saveTrendingCoinsCloud(coins: any[]): Promise<void> {
-  await writeDoc("bot/coins", {
+  await writeDoc("coins/trending", {
     list: coins,
     lastUpdated: new Date().toISOString()
   });
@@ -90,12 +90,12 @@ export async function saveTrendingCoinsCloud(coins: any[]): Promise<void> {
 
 // Generated Messages Sync
 export async function getGeneratedMessagesCloud(): Promise<any[]> {
-  const data = await fetchDoc("bot/messages", { list: [] });
+  const data = await fetchDoc("messages/generated", { list: [] });
   return data.list;
 }
 
 export async function saveGeneratedMessagesCloud(messages: any[]): Promise<void> {
-  await writeDoc("bot/messages", {
+  await writeDoc("messages/generated", {
     list: messages,
     lastUpdated: new Date().toISOString()
   });
@@ -103,12 +103,12 @@ export async function saveGeneratedMessagesCloud(messages: any[]): Promise<void>
 
 // Post Results Sync
 export async function getPostResultsCloud(): Promise<any[]> {
-  const data = await fetchDoc("bot/results", { list: [] });
+  const data = await fetchDoc("results/all", { list: [] });
   return data.list;
 }
 
 export async function savePostResultsCloud(results: any[]): Promise<void> {
-  await writeDoc("bot/results", {
+  await writeDoc("results/all", {
     list: results,
     lastUpdated: new Date().toISOString()
   });
@@ -129,14 +129,14 @@ export async function saveBotProgressCloud(next_index: number): Promise<void> {
 
 // Circular System Logs Sync (saves last 200 logs)
 export async function getSystemLogsCloud(): Promise<any[]> {
-  const data = await fetchDoc("bot/logs", { list: [] });
+  const data = await fetchDoc("logs/all", { list: [] });
   return data.list;
 }
 
 export async function saveSystemLogsCloud(logs: any[]): Promise<void> {
   // Take last 200 logs to prevent exceeding document size limit
   const recentLogs = logs.slice(-200);
-  await writeDoc("bot/logs", {
+  await writeDoc("logs/all", {
     list: recentLogs,
     lastUpdated: new Date().toISOString()
   });

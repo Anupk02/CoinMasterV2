@@ -1,28 +1,8 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Session state
-    match /bot/session {
-      allow read, write: if true;
-    }
-    // Bot progress
-    match /bot/progress {
-      allow read, write: if true;
-    }
-    // Coins collection
-    match /coins/{coinId} {
-      allow read, write: if true;
-    }
-    // Messages collection
-    match /messages/{messageId} {
-      allow read, write: if true;
-    }
-    // Results collection
-    match /results/{resultId} {
-      allow read, write: if true;
-    }
-    // Logs collection
-    match /logs/{logId} {
+    // Allow read/write access to any document in any collection
+    match /{document=**} {
       allow read, write: if true;
     }
   }

@@ -100,10 +100,20 @@ async function installPlaywrightChromium(): Promise<void> {
   }
   isInstallingPlaywright = true;
   try {
-    addLog("info", "Missing Playwright browser or launch failed. Automatically downloading chromium...");
+    addLog("info", "Missing Playwright browser or launch timed out. Automatically downloading chromium and system dependencies...");
     const envStr = process.env.PLAYWRIGHT_BROWSERS_PATH ? `PLAYWRIGHT_BROWSERS_PATH=${process.env.PLAYWRIGHT_BROWSERS_PATH} ` : '';
+    
     addLog("info", `Executing command: ${envStr}npx playwright install chromium`);
     execSync(`${envStr}npx playwright install chromium`, { stdio: "inherit" });
+    
+    addLog("info", `Executing command to install system dependencies (best-effort): ${envStr}npx playwright install-deps chromium`);
+    try {
+      execSync(`${envStr}npx playwright install-deps chromium`, { stdio: "inherit" });
+      addLog("success", "Playwright system dependencies installation complete!");
+    } catch (depsErr) {
+      addLog("warning", `Note: non-root or standard container system dependencies install returned: ${(depsErr as Error).message}. Proceeding resiliently...`);
+    }
+
     addLog("success", "Playwright chromium browser successfully installed!");
   } catch (err) {
     addLog("error", `Failed to automatically run playwright install: ${(err as Error).message}`);
@@ -115,13 +125,22 @@ async function installPlaywrightChromium(): Promise<void> {
 async function launchBrowserResilient(options: any = {}): Promise<any> {
   // Inject highly aggressive memory-saving flags suitable for low-RAM containers like Render (512MB limit)
   const memoryArgs = [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
-    "--no-zygote",
+    "--disable-setuid-sandbox",
+    "--no-sandbox",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
     "--disable-extensions",
+    "--disable-sync",
+    "--disable-default-apps",
     "--mute-audio",
+    "--disable-notifications",
+    "--disable-popup-blocking",
+    "--disable-blink-features=AutomationControlled",
+    "--no-zygote",
+    "--disable-software-rasterizer",
     '--js-flags="--max-old-space-size=128"'
   ];
 
@@ -134,18 +153,37 @@ async function launchBrowserResilient(options: any = {}): Promise<any> {
     }
   }
 
+  if (options.chromiumSandbox === undefined) {
+    options.chromiumSandbox = false;
+  }
+  if (options.headless === undefined) {
+    options.headless = true;
+  }
+
   try {
-    return await chromium.launch(options);
+    // Wrap chromium launch in a 30s timeout so hangs are caught and handled
+    return await withTimeout(
+      chromium.launch(options),
+      30000,
+      "Chromium launch timed out after 30 seconds"
+    );
   } catch (err) {
     const errMsg = (err as Error).message;
     if (
       errMsg.includes("Executable doesn't exist") || 
       errMsg.includes("playwright install") || 
-      errMsg.includes("Looks like Playwright was just installed or updated")
+      errMsg.includes("Looks like Playwright was just installed or updated") ||
+      errMsg.includes("timed out")
     ) {
-      addLog("warning", "Playwright browser executable missing. Attempting automatic installation...");
+      addLog("warning", `Playwright browser launch failed or timed out: ${errMsg}. Re-installing chromium and setting up system dependencies...`);
       await installPlaywrightChromium();
-      return await chromium.launch(options);
+      
+      // Try again on second attempt with a slightly longer timeout
+      return await withTimeout(
+        chromium.launch(options),
+        45000,
+        "Chromium launch timed out after 45 seconds on second attempt"
+      );
     }
     throw err;
   }
@@ -315,44 +353,17 @@ async function locateAndPrepareCommentEditor(page: any): Promise<any> {
   // 1. Purge all blocking overlays/cookie banners immediately via extremely fast DOM script
   await removeBlockingOverlays(page).catch(() => {});
 
-  const editorSelectors = [
-    '[data-test="base-editor-editable"]',
-    'div[contenteditable="true"]',
-    '.public-DraftEditor-content',
-    'textarea[placeholder*="thoughts"]',
-    'textarea[placeholder*="comment"]',
-    '[placeholder*="thoughts"]',
-    '[data-testid="comment-box"]',
-    '[data-testid="editor-input"]',
-    '[data-testid="community-post-editor"]',
-    '[data-testid="post-editor"]',
-    '.DraftEditor-root',
-    '[contenteditable="true"]',
-    '[contenteditable]',
-    'textarea[placeholder*="thought"]',
-    'textarea[placeholder*="comment"]',
-    'textarea[placeholder*="post"]',
-    'textarea[placeholder*="share"]',
-    'textarea[placeholder*="write"]',
-    '[placeholder*="thought" i]',
-    '[placeholder*="comment" i]',
-    '[placeholder*="post" i]',
-    '[placeholder*="share" i]',
-    '[placeholder*="write" i]',
-    '[placeholder*="thoughts" i]',
-    '[role="textbox"]'
-  ];
+  // Robust combined CSS selector covering all possible variants of the editor
+  const robustSelector = 'div[contenteditable="true"], [data-test="base-editor-editable"], .public-DraftEditor-content, textarea[placeholder*="thoughts" i], textarea[placeholder*="comment" i], [placeholder*="thoughts" i], [placeholder*="comment" i], [role="textbox"]';
 
   // 2. CHECK IF EDITOR IS ALREADY VISIBLE. If yes, return immediately!
-  for (const selector of editorSelectors) {
-    try {
-      const el = await page.$(selector);
-      if (el && await el.isVisible()) {
-        addLog("info", `Comment editor already visible on page load: ${selector}. Skipping tab activation and scrolling!`);
-        return el;
-      }
-    } catch {}
-  }
+  try {
+    const el = await page.$(robustSelector);
+    if (el && await el.isVisible()) {
+      addLog("info", "Comment editor is already visible on initial page load. Skipping tab activation and scrolling!");
+      return el;
+    }
+  } catch {}
 
   // 3. If not visible, check and click the Community/Social/Discussion tab
   addLog("info", "Comment editor not immediately visible. Activating Community/Social section tab...");
@@ -369,8 +380,6 @@ async function locateAndPrepareCommentEditor(page: any): Promise<any> {
     'a:has-text("Feed")',
     'button:has-text("Feed")',
     'span:has-text("Feed")',
-    'div[class*="tab" i]:has-text("Community")',
-    'div[class*="tab" i]:has-text("Social")',
     '[data-test="community-tab"]'
   ];
   for (const selector of communityTabs) {
@@ -379,95 +388,49 @@ async function locateAndPrepareCommentEditor(page: any): Promise<any> {
       if (tab && await tab.isVisible()) {
         addLog("info", `Clicking tab trigger to activate community section: "${selector}"`);
         await clickResiliently(page, tab, "community tab button");
-        await page.waitForTimeout(800); // reduced from 1500 to 800 for speed
+        await page.waitForTimeout(500);
         break;
       }
     } catch {}
   }
 
-  // 4. Quick scan after clicking tab
-  for (const selector of editorSelectors) {
-    try {
-      const el = await page.$(selector);
-      if (el && await el.isVisible()) {
-        addLog("info", `Located comment editor after tab click using selector: ${selector}`);
-        return el;
-      }
-    } catch {}
+  // 4. Scroll once to trigger lazy load (removed redundant gradual scrolling/waiting loops)
+  addLog("info", "Performing a single smooth scroll to trigger lazy loading of comments...");
+  await page.evaluate(() => window.scrollBy(0, 800));
+
+  // 5. Use a single, highly efficient wait-for-selector strategy
+  try {
+    addLog("info", "Waiting for comment editor to load using our robust selector strategy...");
+    const editor = await page.waitForSelector(robustSelector, { state: "visible", timeout: 8000 });
+    if (editor) {
+      addLog("success", "Successfully located comment editor using robust selector!");
+      return editor;
+    }
+  } catch (err) {
+    addLog("warning", `Comment editor not visible via main selector: ${(err as Error).message}`);
   }
 
-  // 5. Scroll gradually up to 3 times to trigger lazy load (reduced from 8 times!)
-  addLog("info", "Scanning page/frames with light scrolling to trigger lazy-loaded feeds...");
-  let editor = null;
-  const maxScrolls = 3;
-  for (let scrollStep = 0; scrollStep <= maxScrolls; scrollStep++) {
-    // Check main page
-    for (const selector of editorSelectors) {
-      try {
-        const el = await page.$(selector);
-        if (el && await el.isVisible()) {
-          editor = el;
-          addLog("info", `Located comment editor using selector: ${selector}`);
-          break;
-        }
-      } catch {}
-    }
-    if (editor) break;
-
-    // Check frames
+  // 6. Check frames as a fallback
+  try {
     for (const frame of page.frames()) {
-      for (const selector of editorSelectors) {
-        try {
-          const frameEditor = await frame.$(selector);
-          if (frameEditor && await frameEditor.isVisible()) {
-            editor = frameEditor;
-            addLog("info", `Located comment editor inside frame using selector: ${selector}`);
-            break;
-          }
-        } catch {}
+      const frameEl = await frame.$(robustSelector);
+      if (frameEl && await frameEl.isVisible()) {
+        addLog("info", "Located comment editor inside frame.");
+        return frameEl;
       }
-      if (editor) break;
     }
-    if (editor) break;
+  } catch {}
 
-    // Scroll if needed and not on last step
-    if (scrollStep < maxScrolls) {
-      addLog("info", `Scroll step ${scrollStep + 1}/${maxScrolls}: Editor not found. Scrolling 1200px...`);
-      await page.evaluate(() => window.scrollBy(0, 1200));
-      await page.waitForTimeout(500); // reduced from 1000 to 500 for speed
-    }
-  }
-
-  // 6. Absolute fallback: first visible editable element that is NOT a search bar or nav bar
-  if (!editor) {
-    try {
-      const inputs = await page.$$('div[contenteditable="true"], [role="textbox"], textarea, [contenteditable]');
-      for (const input of inputs) {
-        if (await input.isVisible()) {
-          const idVal = (await input.getAttribute("id") || "").toLowerCase();
-          const classVal = (await input.getAttribute("class") || "").toLowerCase();
-          const placeholderVal = (await input.getAttribute("placeholder") || "").toLowerCase();
-          const nameVal = (await input.getAttribute("name") || "").toLowerCase();
-          
-          if (![idVal, classVal, placeholderVal, nameVal].some(val => val.includes("search") || val.includes("nav") || val.includes("header"))) {
-            editor = input;
-            addLog("info", "Located comment editor via absolute fallback (first visible non-search editable element).");
-            break;
-          }
-        }
-      }
-    } catch {}
-  }
-
-  return editor;
+  return null;
 }
 
 async function setupPageResourceBlocking(page: any): Promise<void> {
   addLog("info", "Setting up highly optimized asset and tracker blocking for page...");
   try {
-    await page.route("**/*", (route: any) => {
-      const resourceType = route.request().resourceType();
-      const url = route.request().url();
+    await page.route("**/*", async (route: any) => {
+      const request = route.request();
+      const resourceType = request.resourceType();
+      const url = request.url();
       
       const blockedTypes = ["image", "media", "font"];
       const blockedDomains = [
@@ -493,9 +456,9 @@ async function setupPageResourceBlocking(page: any): Promise<void> {
                           blockedDomains.some(domain => url.includes(domain));
                           
       if (shouldBlock) {
-        route.abort().catch(() => {});
+        await route.abort().catch(() => {});
       } else {
-        route.continue().catch(() => {});
+        await route.continue().catch(() => {});
       }
     });
   } catch (err) {
@@ -1059,22 +1022,31 @@ async function executeCancelLogin(): Promise<void> {
   }
 }
 
-async function runRealPostingInternal(url: string, message: string, sentiment: string): Promise<{ status: "success" | "expired" | "captcha" | "failed" | "retry"; message: string }> {
-  addLog("info", "Playwright launching headlessly with stealth configurations...");
-  let browser: any = null;
+async function runRealPostingInternal(url: string, message: string, sentiment: string, sharedBrowser?: any): Promise<{ status: "success" | "expired" | "captcha" | "failed" | "retry"; message: string }> {
+  let browser: any = sharedBrowser || null;
+  let ownsBrowser = !sharedBrowser;
+  let context: any = null;
+  let page: any = null;
+  
   try {
-    browser = await launchBrowserResilient({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-blink-features=AutomationControlled",
-      ]
-    });
+    if (!browser) {
+      addLog("info", "Playwright launching headlessly with stealth configurations...");
+      browser = await launchBrowserResilient({
+        headless: true,
+        args: [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-gpu",
+          "--disable-blink-features=AutomationControlled",
+        ]
+      });
+    } else {
+      addLog("info", "Re-using existing active Playwright browser instance for posting task.");
+    }
+
     addLog("info", "Loading browser context storage state from auth/state.json...");
-    const context = await browser.newContext({
+    context = await browser.newContext({
       storageState: AUTH_STATE_FILE,
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
       viewport: { width: 1366, height: 768 },
@@ -1089,18 +1061,42 @@ async function runRealPostingInternal(url: string, message: string, sentiment: s
       });
     });
 
-    const page = await context.newPage();
+    page = await context.newPage();
+    
+    // Set explicit navigation and operation timeouts to 90 seconds (Guideline 9)
+    page.setDefaultNavigationTimeout(90000);
+    page.setDefaultTimeout(90000);
+
     await setupPageResourceBlocking(page);
     addLog("info", `Navigating to target coin URL: ${url}`);
     
     await page.goto(url, {
       waitUntil: "domcontentloaded",
-      timeout: 45000
+      timeout: 90000
     });
     
     // Wait for the page to settle
     await page.waitForTimeout(2000);
     
+    // --- START OF SESSION-VERIFY CHECK ---
+    addLog("info", "Executing explicit 'session-verify' check on target coin page...");
+    const currentUrl = page.url();
+    if (currentUrl.includes("/login") || currentUrl.includes("/signin") || currentUrl.includes("/auth")) {
+      addLog("error", `Session-verify check failed: Redirected to login page (${currentUrl})`);
+      await saveDebugScreenshot(page, "session_verify_failed_redirect");
+      return { status: "expired", message: "Session expired: Redirected to login page" };
+    }
+    
+    // Check if login or signup buttons are visible on the page
+    const loginBtn = await page.$('button:has-text("Log In"), button:has-text("Sign Up"), a:has-text("Log In"), a:has-text("Sign Up")');
+    if (loginBtn && await loginBtn.isVisible()) {
+      addLog("error", "Session-verify check failed: Found active 'Log In' or 'Sign Up' buttons. User is logged out.");
+      await saveDebugScreenshot(page, "session_verify_failed_buttons");
+      return { status: "expired", message: "Not logged in - Session expired" };
+    }
+    addLog("success", "Explicit 'session-verify' check passed! Active session confirmed on target coin page.");
+    // --- END OF SESSION-VERIFY CHECK ---
+
     // Scan page for the comment editor
     const editor = await locateAndPrepareCommentEditor(page);
 
@@ -1243,7 +1239,13 @@ async function runRealPostingInternal(url: string, message: string, sentiment: s
     addLog("error", `Playwright posting execution failed: ${(error as Error).message}`);
     return { status: "failed", message: (error as Error).message };
   } finally {
-    if (browser) {
+    if (page) {
+      await page.close().catch(() => {});
+    }
+    if (context) {
+      await context.close().catch(() => {});
+    }
+    if (browser && ownsBrowser) {
       await browser.close().catch(() => {});
     }
   }
@@ -1345,7 +1347,7 @@ async function resolveToFirstPartyUrl(originalUrl: string, symbol: string, name:
   return originalUrl;
 }
 
-async function runRealPosting(url: string, message: string, sentiment: string): Promise<{ status: "success" | "expired" | "captcha" | "failed" | "retry" | "skipped"; message: string }> {
+async function runRealPosting(url: string, message: string, sentiment: string, sharedBrowser?: any): Promise<{ status: "success" | "expired" | "captcha" | "failed" | "retry" | "skipped"; message: string }> {
   if (!url || url.includes("dex.coinmarketcap.com")) {
     addLog("warning", `Skipping DEX Scan URL: ${url} (DEX Scan pages do not support community postings)`);
     return { status: "skipped", message: "Cannot post on DEX Scan pages" };
@@ -1364,7 +1366,7 @@ async function runRealPosting(url: string, message: string, sentiment: string): 
           await new Promise(resolve => setTimeout(resolve, 5000));
         }
       }
-      const rawResult = await runRealPostingInternal(url, message, sentiment);
+      const rawResult = await runRealPostingInternal(url, message, sentiment, sharedBrowser);
       lastResult = rawResult as any;
       if (lastResult.status === "success" || lastResult.status === "captcha" || lastResult.status === "expired" || lastResult.status === "skipped") {
         return lastResult;
@@ -2334,248 +2336,275 @@ async function runPostingLoop() {
   const results = readJsonFile<PostResult[]>(RESULTS_FILE, []);
   
   let consecutiveFailures = 0;
+  let sharedBrowser: any = null;
 
-  currentCoinName = "Verifying Session...";
-  addLog("info", "Always verifying active session status before posting...");
   try {
-    const loginCheck = await checkLoginReal();
-    if (loginCheck.status !== "success") {
-      addLog("warning", `[SESSION WARNING] Session check returned: ${loginCheck.status} (${loginCheck.message}). Trying to proceed anyway, but posts may fail if cookies are expired.`);
-    } else {
-      addLog("success", "[SESSION SUCCESS] Session verified as ACTIVE!");
-    }
-  } catch (err) {
-    addLog("error", `[SESSION ERROR] Failed to run automated session check: ${(err as Error).message}`);
-  }
-
-  // Find the first truly pending coin in the list
-  const firstPendingIdx = messages.findIndex(msgItem => !results.some(r => r.symbol.toLowerCase() === msgItem.symbol.toLowerCase()));
-  if (firstPendingIdx === -1) {
-    addLog("success", "All coins in the queue have already been processed (either successfully posted or failed). No pending coins left to post.");
-    isPostingRunning = false;
-    botStatus = "Idle";
-    currentCoinName = "N/A";
-    return;
-  }
-  currentPostingIndex = firstPendingIdx;
-
-  const initialPendingList = messages.filter(msgItem => !results.some(r => r.symbol.toLowerCase() === msgItem.symbol.toLowerCase()));
-  const initialPendingCount = initialPendingList.length;
-  let activeQueueNum = 0;
-
-  while (isPostingRunning && currentPostingIndex < messages.length) {
-    const item = messages[currentPostingIndex];
-    
-    // Check if this coin has already been successfully or unsuccessfully posted
-    const currentResults = readJsonFile<PostResult[]>(RESULTS_FILE, []);
-    const existingResult = currentResults.find(r => r.symbol.toLowerCase() === item.symbol.toLowerCase());
-    if (existingResult) {
-      currentPostingIndex++;
-      writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
-      continue;
+    currentCoinName = "Verifying Session...";
+    addLog("info", "Always verifying active session status before posting...");
+    try {
+      const loginCheck = await checkLoginReal();
+      if (loginCheck.status !== "success") {
+        addLog("warning", `[SESSION WARNING] Session check returned: ${loginCheck.status} (${loginCheck.message}). Trying to proceed anyway, but posts may fail if cookies are expired.`);
+      } else {
+        addLog("success", "[SESSION SUCCESS] Session verified as ACTIVE!");
+      }
+    } catch (err) {
+      addLog("error", `[SESSION ERROR] Failed to run automated session check: ${(err as Error).message}`);
     }
 
-    activeQueueNum++;
-    currentCoinName = `${item.name} (${item.symbol})`;
-    writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
+    // Find the first truly pending coin in the list
+    const firstPendingIdx = messages.findIndex(msgItem => !results.some(r => r.symbol.toLowerCase() === msgItem.symbol.toLowerCase()));
+    if (firstPendingIdx === -1) {
+      addLog("success", "All coins in the queue have already been processed (either successfully posted or failed). No pending coins left to post.");
+      isPostingRunning = false;
+      botStatus = "Idle";
+      currentCoinName = "N/A";
+      return;
+    }
+    currentPostingIndex = firstPendingIdx;
 
-    addLog("info", `----------------------------------------`);
-    addLog("info", `Executing Post Sequence [Queue Item #${activeQueueNum} of ${initialPendingCount} remaining]: ${currentCoinName}`);
-
-    // Wait 1-2 seconds to simulate browser startup/navigation
-    await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
-
-    if (!isPostingRunning) break;
-
-    let outcome: PostResult["status"] = "success";
-    let messageText = "Posted successfully";
+    const initialPendingList = messages.filter(msgItem => !results.some(r => r.symbol.toLowerCase() === msgItem.symbol.toLowerCase()));
+    const initialPendingCount = initialPendingList.length;
+    let activeQueueNum = 0;
 
     if (runMode === "Real Browser") {
-      addLog("info", `Launching automated Playwright context for ${item.name}...`);
       try {
-        const resolvedUrl = await resolveToFirstPartyUrl(item.url, item.symbol, item.name);
-        const realResult = await runRealPosting(resolvedUrl, item.message, item.sentiment || "bullish");
-        outcome = realResult.status;
-        messageText = realResult.message;
-      } catch (err) {
-        outcome = "failed";
-        messageText = `Playwright runtime error: ${(err as Error).message}`;
-        addLog("error", `CRITICAL Error during automation: ${messageText}`);
-      }
-    } else {
-      addLog("info", `Loading page: ${item.url}`);
-      addLog("info", `Injecting storage session cookies into browser context`);
-      addLog("info", `Finding selector: [data-test="base-editor-editable"]`);
-
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
-      addLog("info", `Editor text-field focused. Typing comment: "${item.message}"`);
-      addLog("info", `Clicking ${item.sentiment || "bullish"} sentiment toggle [data-test="editor-${item.sentiment || "bullish"}-button"]`);
-
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
-      addLog("info", `Clicking post submission button [data-test="editor-post-button"]`);
-
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Simulate outcomes randomly to reflect real scenarios
-      const rand = Math.random();
-      if (rand < 0.05) {
-        outcome = "captcha";
-        messageText = "Captcha challenge detected (Cloudflare verify you are human)";
-        addLog("warning", "WARNING: Captcha challenge intercepted. Attempting bypass...");
-      } else if (rand < 0.08) {
-        outcome = "retry";
-        messageText = "Post failed (Too many requests, rate-limit). Retry scheduled.";
-        addLog("warning", "WARNING: CoinMarketCap rate limit. Sleeping for 5s...");
-      } else {
-        addLog("success", `SUCCESS: Comment posted successfully for ${item.symbol}!`);
+        addLog("info", "Pre-launching single shared Playwright browser instance for full posting sequence...");
+        sharedBrowser = await launchBrowserResilient({
+          headless: true,
+          args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-blink-features=AutomationControlled",
+          ]
+        });
+      } catch (browserErr) {
+        addLog("error", `Failed to pre-launch shared browser: ${(browserErr as Error).message}. Will launch on-demand.`);
       }
     }
 
-    if (outcome === "success") {
-      consecutiveFailures = 0;
-      addLog("success", `SUCCESS: Completed comment posted for ${item.symbol}!`);
+    while (isPostingRunning && currentPostingIndex < messages.length) {
+      const item = messages[currentPostingIndex];
       
-      results.push({
-        name: item.name,
-        symbol: item.symbol,
-        url: item.url,
-        status: outcome,
-        message: messageText,
-        timestamp: new Date().toLocaleTimeString(),
-        sentiment: item.sentiment || "bullish",
-      });
-      writeJsonFile(RESULTS_FILE, results);
-      
-      currentPostingIndex++;
+      // Check if this coin has already been successfully or unsuccessfully posted
+      const currentResults = readJsonFile<PostResult[]>(RESULTS_FILE, []);
+      const existingResult = currentResults.find(r => r.symbol.toLowerCase() === item.symbol.toLowerCase());
+      if (existingResult) {
+        currentPostingIndex++;
+        writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
+        continue;
+      }
+
+      activeQueueNum++;
+      currentCoinName = `${item.name} (${item.symbol})`;
       writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
-    } else if (outcome === "skipped") {
-      addLog("warning", `SKIPPED: Skipped posting for ${item.symbol} (${messageText}).`);
-      
-      results.push({
-        name: item.name,
-        symbol: item.symbol,
-        url: item.url,
-        status: outcome,
-        message: messageText,
-        timestamp: new Date().toLocaleTimeString(),
-        sentiment: item.sentiment || "bullish",
-      });
-      writeJsonFile(RESULTS_FILE, results);
-      
-      currentPostingIndex++;
-      writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
-    } else if (outcome === "retry" || outcome === "failed") {
-      addLog("info", `Executing scheduled retry attempt for ${item.symbol} (status: ${outcome})...`);
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      
-      let retrySuccess = false;
-      let finalStatus: PostResult["status"] = "failed";
-      let finalMessage = "Retry failed";
+
+      addLog("info", `----------------------------------------`);
+      addLog("info", `Executing Post Sequence [Queue Item #${activeQueueNum} of ${initialPendingCount} remaining]: ${currentCoinName}`);
+
+      // Wait 1-2 seconds to simulate browser startup/navigation
+      await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
+
+      if (!isPostingRunning) break;
+
+      let outcome: PostResult["status"] = "success";
+      let messageText = "Posted successfully";
 
       if (runMode === "Real Browser") {
+        addLog("info", `Launching automated Playwright context for ${item.name}...`);
         try {
-          addLog("info", "Retrying post with active Playwright context...");
           const resolvedUrl = await resolveToFirstPartyUrl(item.url, item.symbol, item.name);
-          const retryResult = await runRealPosting(resolvedUrl, item.message, item.sentiment || "bullish");
-          finalStatus = retryResult.status;
-          finalMessage = retryResult.message;
-          if (retryResult.status === "success") {
-            addLog("success", `SUCCESS: Retry posting succeeded for ${item.symbol}!`);
-            retrySuccess = true;
-          } else {
-            addLog("error", `FAIL: Retry posting failed: ${retryResult.message}`);
-          }
+          const realResult = await runRealPosting(resolvedUrl, item.message, item.sentiment || "bullish", sharedBrowser);
+          outcome = realResult.status;
+          messageText = realResult.message;
         } catch (err) {
-          finalStatus = "failed";
-          finalMessage = (err as Error).message;
-          addLog("error", `Exception in retry: ${(err as Error).message}`);
+          outcome = "failed";
+          messageText = `Playwright runtime error: ${(err as Error).message}`;
+          addLog("error", `CRITICAL Error during automation: ${messageText}`);
         }
       } else {
-        addLog("success", `SUCCESS: Retry posting succeeded for ${item.symbol}!`);
-        retrySuccess = true;
-        finalStatus = "success";
-        finalMessage = "Posted successfully after retry";
-      }
-      
-      if (retrySuccess) {
-        consecutiveFailures = 0;
-        results.push({
-          name: item.name,
-          symbol: item.symbol,
-          url: item.url,
-          status: "success",
-          message: "Posted successfully after retry",
-          timestamp: new Date().toLocaleTimeString(),
-          sentiment: item.sentiment || "bullish",
-        });
-      } else {
-        consecutiveFailures++;
-        results.push({
-          name: item.name,
-          symbol: item.symbol,
-          url: item.url,
-          status: finalStatus,
-          message: finalMessage,
-          timestamp: new Date().toLocaleTimeString(),
-          sentiment: item.sentiment || "bullish",
-        });
-      }
-      
-      writeJsonFile(RESULTS_FILE, results);
-      currentPostingIndex++;
-      writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
+        addLog("info", `Loading page: ${item.url}`);
+        addLog("info", `Injecting storage session cookies into browser context`);
+        addLog("info", `Finding selector: [data-test="base-editor-editable"]`);
 
-      if (consecutiveFailures >= 3) {
-        addLog("error", "CRITICAL: Automated posting paused due to 3 consecutive failures. Please verify your CoinMarketCap login session and cookies.");
-        isPostingRunning = false;
-        botStatus = "Idle";
-        break;
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        addLog("info", `Editor text-field focused. Typing comment: "${item.message}"`);
+        addLog("info", `Clicking ${item.sentiment || "bullish"} sentiment toggle [data-test="editor-${item.sentiment || "bullish"}-button"]`);
+
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        addLog("info", `Clicking post submission button [data-test="editor-post-button"]`);
+
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Simulate outcomes randomly to reflect real scenarios
+        const rand = Math.random();
+        if (rand < 0.05) {
+          outcome = "captcha";
+          messageText = "Captcha challenge detected (Cloudflare verify you are human)";
+          addLog("warning", "WARNING: Captcha challenge intercepted. Attempting bypass...");
+        } else if (rand < 0.08) {
+          outcome = "retry";
+          messageText = "Post failed (Too many requests, rate-limit). Retry scheduled.";
+          addLog("warning", "WARNING: CoinMarketCap rate limit. Sleeping for 5s...");
+        } else {
+          addLog("success", `SUCCESS: Comment posted successfully for ${item.symbol}!`);
+        }
       }
-      if (!retrySuccess) {
+
+      if (outcome === "success") {
+        consecutiveFailures = 0;
+        addLog("success", `SUCCESS: Completed comment posted for ${item.symbol}!`);
+        
+        results.push({
+          name: item.name,
+          symbol: item.symbol,
+          url: item.url,
+          status: outcome,
+          message: messageText,
+          timestamp: new Date().toLocaleTimeString(),
+          sentiment: item.sentiment || "bullish",
+        });
+        writeJsonFile(RESULTS_FILE, results);
+        
+        currentPostingIndex++;
+        writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
+      } else if (outcome === "skipped") {
+        addLog("warning", `SKIPPED: Skipped posting for ${item.symbol} (${messageText}).`);
+        
+        results.push({
+          name: item.name,
+          symbol: item.symbol,
+          url: item.url,
+          status: outcome,
+          message: messageText,
+          timestamp: new Date().toLocaleTimeString(),
+          sentiment: item.sentiment || "bullish",
+        });
+        writeJsonFile(RESULTS_FILE, results);
+        
+        currentPostingIndex++;
+        writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
+      } else if (outcome === "retry" || outcome === "failed") {
+        addLog("info", `Executing scheduled retry attempt for ${item.symbol} (status: ${outcome})...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        let retrySuccess = false;
+        let finalStatus: PostResult["status"] = "failed";
+        let finalMessage = "Retry failed";
+
+        if (runMode === "Real Browser") {
+          try {
+            addLog("info", "Retrying post with active Playwright context...");
+            const resolvedUrl = await resolveToFirstPartyUrl(item.url, item.symbol, item.name);
+            const retryResult = await runRealPosting(resolvedUrl, item.message, item.sentiment || "bullish", sharedBrowser);
+            finalStatus = retryResult.status;
+            finalMessage = retryResult.message;
+            if (retryResult.status === "success") {
+              addLog("success", `SUCCESS: Retry posting succeeded for ${item.symbol}!`);
+              retrySuccess = true;
+            } else {
+              addLog("error", `FAIL: Retry posting failed: ${retryResult.message}`);
+            }
+          } catch (err) {
+            finalStatus = "failed";
+            finalMessage = (err as Error).message;
+            addLog("error", `Exception in retry: ${(err as Error).message}`);
+          }
+        } else {
+          addLog("success", `SUCCESS: Retry posting succeeded for ${item.symbol}!`);
+          retrySuccess = true;
+          finalStatus = "success";
+          finalMessage = "Posted successfully after retry";
+        }
+        
+        if (retrySuccess) {
+          consecutiveFailures = 0;
+          results.push({
+            name: item.name,
+            symbol: item.symbol,
+            url: item.url,
+            status: "success",
+            message: "Posted successfully after retry",
+            timestamp: new Date().toLocaleTimeString(),
+            sentiment: item.sentiment || "bullish",
+          });
+        } else {
+          consecutiveFailures++;
+          results.push({
+            name: item.name,
+            symbol: item.symbol,
+            url: item.url,
+            status: finalStatus,
+            message: finalMessage,
+            timestamp: new Date().toLocaleTimeString(),
+            sentiment: item.sentiment || "bullish",
+          });
+        }
+        
+        writeJsonFile(RESULTS_FILE, results);
+        currentPostingIndex++;
+        writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
+
+        if (consecutiveFailures >= 3) {
+          addLog("error", "CRITICAL: Automated posting paused due to 3 consecutive failures. Please verify your CoinMarketCap login session and cookies.");
+          isPostingRunning = false;
+          botStatus = "Idle";
+          break;
+        }
+        if (!retrySuccess) {
+          addLog("info", "Skipping to next coin to maintain end-to-end automation run...");
+        }
+      } else {
+        // Captcha, expired or failed
+        consecutiveFailures++;
+        addLog("warning", `WARNING: Post failed for ${item.symbol} with status '${outcome}' (${consecutiveFailures}/3 consecutive failures).`);
+        
+        results.push({
+          name: item.name,
+          symbol: item.symbol,
+          url: item.url,
+          status: outcome,
+          message: messageText,
+          timestamp: new Date().toLocaleTimeString(),
+          sentiment: item.sentiment || "bullish",
+        });
+        writeJsonFile(RESULTS_FILE, results);
+        
+        currentPostingIndex++;
+        writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
+
+        if (consecutiveFailures >= 3) {
+          addLog("error", "CRITICAL: Automated posting paused due to 3 consecutive failures. Please verify your CoinMarketCap login session and cookies.");
+          isPostingRunning = false;
+          botStatus = "Idle";
+          break;
+        }
         addLog("info", "Skipping to next coin to maintain end-to-end automation run...");
       }
-    } else {
-      // Captcha, expired or failed
-      consecutiveFailures++;
-      addLog("warning", `WARNING: Post failed for ${item.symbol} with status '${outcome}' (${consecutiveFailures}/3 consecutive failures).`);
-      
-      results.push({
-        name: item.name,
-        symbol: item.symbol,
-        url: item.url,
-        status: outcome,
-        message: messageText,
-        timestamp: new Date().toLocaleTimeString(),
-        sentiment: item.sentiment || "bullish",
-      });
-      writeJsonFile(RESULTS_FILE, results);
-      
-      currentPostingIndex++;
-      writeJsonFile(POST_PROGRESS_FILE, { next_index: currentPostingIndex });
 
-      if (consecutiveFailures >= 3) {
-        addLog("error", "CRITICAL: Automated posting paused due to 3 consecutive failures. Please verify your CoinMarketCap login session and cookies.");
-        isPostingRunning = false;
-        botStatus = "Idle";
-        break;
-      }
-      addLog("info", "Skipping to next coin to maintain end-to-end automation run...");
+      // Interval spacing between posts to avoid bot detection (1.5 - 3 seconds)
+      const spacing = 1500 + Math.random() * 1500;
+      addLog("info", `Cooling down for ${(spacing / 1000).toFixed(1)} seconds before proceeding...`);
+      await new Promise(resolve => setTimeout(resolve, spacing));
     }
 
-    // Interval spacing between posts to avoid bot detection (1.5 - 3 seconds)
-    const spacing = 1500 + Math.random() * 1500;
-    addLog("info", `Cooling down for ${(spacing / 1000).toFixed(1)} seconds before proceeding...`);
-    await new Promise(resolve => setTimeout(resolve, spacing));
-  }
-
-  if (currentPostingIndex >= messages.length) {
-    addLog("success", "CONGRATULATIONS: Complete automated posting run finished successfully!");
-    botStatus = "Completed";
-    isPostingRunning = false;
-  } else if (!isPostingRunning) {
-    botStatus = "Idle";
+    if (currentPostingIndex >= messages.length) {
+      addLog("success", "CONGRATULATIONS: Complete automated posting run finished successfully!");
+      botStatus = "Completed";
+      isPostingRunning = false;
+    } else if (!isPostingRunning) {
+      botStatus = "Idle";
+    }
+  } finally {
+    if (sharedBrowser) {
+      addLog("info", "Closing shared Playwright browser instance...");
+      await sharedBrowser.close().catch(() => {});
+      sharedBrowser = null;
+    }
   }
 }
 
