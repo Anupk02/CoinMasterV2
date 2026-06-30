@@ -1,5 +1,6 @@
 import path from "path";
 import fs from "fs";
+import { execSync } from "child_process";
 
 // Configure Playwright to use a consistent local cache directory inside the project folder
 process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(process.cwd(), ".cache", "ms-playwright");
@@ -60,6 +61,46 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: st
   return Promise.race([promise, timeoutPromise]).finally(() => {
     clearTimeout(timeoutId);
   });
+}
+
+let isInstallingPlaywright = false;
+async function installPlaywrightChromium(): Promise<void> {
+  if (isInstallingPlaywright) {
+    while (isInstallingPlaywright) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    return;
+  }
+  isInstallingPlaywright = true;
+  try {
+    addLog("info", "Missing Playwright browser or launch failed. Automatically downloading chromium...");
+    const envStr = process.env.PLAYWRIGHT_BROWSERS_PATH ? `PLAYWRIGHT_BROWSERS_PATH=${process.env.PLAYWRIGHT_BROWSERS_PATH} ` : '';
+    addLog("info", `Executing command: ${envStr}npx playwright install chromium`);
+    execSync(`${envStr}npx playwright install chromium`, { stdio: "inherit" });
+    addLog("success", "Playwright chromium browser successfully installed!");
+  } catch (err) {
+    addLog("error", `Failed to automatically run playwright install: ${(err as Error).message}`);
+  } finally {
+    isInstallingPlaywright = false;
+  }
+}
+
+async function launchBrowserResilient(options: any = {}): Promise<any> {
+  try {
+    return await chromium.launch(options);
+  } catch (err) {
+    const errMsg = (err as Error).message;
+    if (
+      errMsg.includes("Executable doesn't exist") || 
+      errMsg.includes("playwright install") || 
+      errMsg.includes("Looks like Playwright was just installed or updated")
+    ) {
+      addLog("warning", "Playwright browser executable missing. Attempting automatic installation...");
+      await installPlaywrightChromium();
+      return await chromium.launch(options);
+    }
+    throw err;
+  }
 }
 
 // Initial System Logs
@@ -377,7 +418,7 @@ async function checkLoginRealInternal(): Promise<{ status: "success" | "expired"
   addLog("info", "Playwright launching headlessly with stealth configurations...");
   let browser: any = null;
   try {
-    browser = await chromium.launch({
+    browser = await launchBrowserResilient({
       headless: true,
       args: [
         "--no-sandbox",
@@ -472,8 +513,8 @@ async function checkLoginReal(): Promise<{ status: "success" | "expired" | "capt
       }
       lastResult = await withTimeout(
         checkLoginRealInternal(),
-        15000,
-        "Playwright launch or session check timed out after 15 seconds"
+        55000,
+        "Playwright launch or session check timed out after 55 seconds"
       );
       if (lastResult.status === "success") {
         return lastResult;
@@ -497,7 +538,7 @@ async function executeStartLogin(email: string, password: string): Promise<{ sta
   addLog("info", `Starting automated credentials login flow for email: ${email}...`);
   let browser: any = null;
   try {
-    browser = await chromium.launch({
+    browser = await launchBrowserResilient({
       headless: true,
       args: [
         "--no-sandbox",
@@ -931,7 +972,7 @@ async function runRealPostingInternal(url: string, message: string, sentiment: s
   addLog("info", "Playwright launching headlessly with stealth configurations...");
   let browser: any = null;
   try {
-    browser = await chromium.launch({
+    browser = await launchBrowserResilient({
       headless: true,
       args: [
         "--no-sandbox",
@@ -1548,7 +1589,7 @@ async function fetchTrendingByScrape(): Promise<Coin[]> {
   addLog("info", "Launching Playwright to scrape real trending data from CoinMarketCap...");
   let browser: any = null;
   try {
-    browser = await chromium.launch({
+    browser = await launchBrowserResilient({
       headless: true,
       args: [
         "--no-sandbox",
@@ -1718,8 +1759,8 @@ async function executeFetchTrending(): Promise<{ coins: Coin[]; creditCount: num
   try {
     coins = await withTimeout(
       fetchTrendingByScrape(),
-      15000,
-      "Playwright launch or scrape timed out after 15 seconds"
+      55000,
+      "Playwright launch or scrape timed out after 55 seconds"
     );
   } catch (scrapeErr) {
     addLog("warning", `Playwright scraping failed: ${(scrapeErr as Error).message}. Falling back to API...`);
