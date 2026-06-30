@@ -119,7 +119,6 @@ async function launchBrowserResilient(options: any = {}): Promise<any> {
     "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
-    "--single-process",
     "--no-zygote",
     "--disable-extensions",
     "--mute-audio",
@@ -463,6 +462,47 @@ async function locateAndPrepareCommentEditor(page: any): Promise<any> {
   return editor;
 }
 
+async function setupPageResourceBlocking(page: any): Promise<void> {
+  addLog("info", "Setting up highly optimized asset and tracker blocking for page...");
+  try {
+    await page.route("**/*", (route: any) => {
+      const resourceType = route.request().resourceType();
+      const url = route.request().url();
+      
+      const blockedTypes = ["image", "media", "font"];
+      const blockedDomains = [
+        "google-analytics.com",
+        "googletagmanager.com",
+        "doubleclick.net",
+        "facebook.net",
+        "facebook.com",
+        "hotjar.com",
+        "scorecardresearch.com",
+        "quantserve.com",
+        "intercom.io",
+        "mixpanel.com",
+        "amplitude.com",
+        "adsystem.com",
+        "ads-twitter.com",
+        "smartadserver.com",
+        "adnxs.com",
+        "pubmatic.com"
+      ];
+      
+      const shouldBlock = blockedTypes.includes(resourceType) || 
+                          blockedDomains.some(domain => url.includes(domain));
+                          
+      if (shouldBlock) {
+        route.abort().catch(() => {});
+      } else {
+        route.continue().catch(() => {});
+      }
+    });
+  } catch (err) {
+    addLog("warning", `Could not set up page resource blocking: ${(err as Error).message}`);
+  }
+}
+
 async function checkLoginRealInternal(): Promise<{ status: "success" | "expired" | "captcha" | "failed"; message: string }> {
   addLog("info", "Playwright launching headlessly with stealth configurations...");
   let browser: any = null;
@@ -494,6 +534,7 @@ async function checkLoginRealInternal(): Promise<{ status: "success" | "expired"
     });
 
     const page = await context.newPage();
+    await setupPageResourceBlocking(page);
     addLog("info", "Navigating to CoinMarketCap Bitcoin page: https://coinmarketcap.com/currencies/bitcoin/");
     
     await page.goto("https://coinmarketcap.com/currencies/bitcoin/", {
@@ -562,8 +603,8 @@ async function checkLoginReal(): Promise<{ status: "success" | "expired" | "capt
       }
       lastResult = await withTimeout(
         checkLoginRealInternal(),
-        55000,
-        "Playwright launch or session check timed out after 55 seconds"
+        120000,
+        "Playwright launch or session check timed out after 120 seconds"
       );
       if (lastResult.status === "success") {
         return lastResult;
@@ -612,6 +653,7 @@ async function executeStartLogin(email: string, password: string): Promise<{ sta
     });
 
     const page = await context.newPage();
+    await setupPageResourceBlocking(page);
     addLog("info", "Navigating to CoinMarketCap Home page...");
     await page.goto("https://coinmarketcap.com/", {
       waitUntil: "domcontentloaded",
@@ -1048,6 +1090,7 @@ async function runRealPostingInternal(url: string, message: string, sentiment: s
     });
 
     const page = await context.newPage();
+    await setupPageResourceBlocking(page);
     addLog("info", `Navigating to target coin URL: ${url}`);
     
     await page.goto(url, {
@@ -1697,6 +1740,7 @@ async function fetchTrendingByScrape(): Promise<Coin[]> {
     });
 
     const page = await context.newPage();
+    await setupPageResourceBlocking(page);
     addLog("info", "Navigating to: https://coinmarketcap.com/trending-cryptocurrencies/");
     await page.goto("https://coinmarketcap.com/trending-cryptocurrencies/", {
       waitUntil: "domcontentloaded",
@@ -1843,8 +1887,8 @@ async function executeFetchTrending(): Promise<{ coins: Coin[]; creditCount: num
   try {
     coins = await withTimeout(
       fetchTrendingByScrape(),
-      55000,
-      "Playwright launch or scrape timed out after 55 seconds"
+      120000,
+      "Playwright launch or scrape timed out after 120 seconds"
     );
   } catch (scrapeErr) {
     addLog("warning", `Playwright scraping failed: ${(scrapeErr as Error).message}. Falling back to API...`);
