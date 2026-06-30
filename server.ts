@@ -50,6 +50,18 @@ function addLog(level: "info" | "success" | "warning" | "error", message: string
   }
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(errorMessage));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutId);
+  });
+}
+
 // Initial System Logs
 addLog("info", "CoinMarketCap Bot Server initialized.");
 addLog("info", "Ready to process trending coins and execute automation.");
@@ -458,7 +470,11 @@ async function checkLoginReal(): Promise<{ status: "success" | "expired" | "capt
         addLog("warning", `[SESSION CONNECT RETRY] Session check or connection failed. Retrying connect (Attempt ${attempt}/${attempts}) in 3s...`);
         await new Promise(resolve => setTimeout(resolve, 3000));
       }
-      lastResult = await checkLoginRealInternal();
+      lastResult = await withTimeout(
+        checkLoginRealInternal(),
+        15000,
+        "Playwright launch or session check timed out after 15 seconds"
+      );
       if (lastResult.status === "success") {
         return lastResult;
       }
@@ -1682,7 +1698,7 @@ async function fetchTrendingByScrape(): Promise<Coin[]> {
       }
     })()`) as Coin[];
 
-    if (coins && coins.length > 0) {
+        if (coins && coins.length > 0) {
       addLog("success", `Successfully scraped ${coins.length} trending coins directly from CoinMarketCap!`);
       return coins;
     } else {
@@ -1700,7 +1716,11 @@ async function executeFetchTrending(): Promise<{ coins: Coin[]; creditCount: num
   let creditCount = 0;
 
   try {
-    coins = await fetchTrendingByScrape();
+    coins = await withTimeout(
+      fetchTrendingByScrape(),
+      15000,
+      "Playwright launch or scrape timed out after 15 seconds"
+    );
   } catch (scrapeErr) {
     addLog("warning", `Playwright scraping failed: ${(scrapeErr as Error).message}. Falling back to API...`);
   }
