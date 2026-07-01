@@ -2,6 +2,19 @@ import path from "path";
 import fs from "fs";
 import { execSync } from "child_process";
 
+// Auto-detect production mode if running from bundled dist/server.cjs or process.env.NODE_ENV is not explicitly set
+if (!process.env.NODE_ENV) {
+  const isCjs = typeof __filename !== "undefined";
+  const isBundled = isCjs && (__filename.endsWith("server.cjs") || __filename.includes("dist"));
+  const hasSrcDir = fs.existsSync(path.join(process.cwd(), "src"));
+  if (isBundled || !hasSrcDir) {
+    process.env.NODE_ENV = "production";
+  } else {
+    process.env.NODE_ENV = "development";
+  }
+}
+console.log(`[SERVER] Detected environment: NODE_ENV=${process.env.NODE_ENV}`);
+
 // Configure Playwright to use a consistent local cache directory inside the project folder
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
   const localCachePath = path.join(process.cwd(), ".cache", "ms-playwright");
@@ -30,7 +43,6 @@ import {
 } from "./src/firebase-db";
 
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import OpenAI from "openai";
 import dotenv from "dotenv";
 import { createRequire } from "module";
@@ -41,6 +53,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 dotenv.config({ override: true });
 
 const app = express();
+app.set("trust proxy", true);
 const PORT = Number(process.env.PORT) || 3000;
 
 const OUTPUT_DIR = path.join(process.cwd(), "output");
@@ -3014,15 +3027,29 @@ async function startServer() {
   await hydrateLocalFromCloud();
 
   if (process.env.NODE_ENV !== "production") {
+    addLog("info", "[SERVER] Running in DEVELOPMENT mode, initializing Vite dev server middleware...");
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    addLog("info", "[SERVER] Running in PRODUCTION mode, serving static files...");
+    let distPath = path.join(process.cwd(), "dist");
+    if (!fs.existsSync(distPath)) {
+      distPath = path.resolve(__dirname, "../dist");
+    }
+    if (!fs.existsSync(distPath)) {
+      distPath = path.resolve(__dirname, "dist");
+    }
+    
+    addLog("info", `[SERVER] Static production assets directory resolved to: ${distPath}`);
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    app.get("*", (req, res, next) => {
+      if (req.path.startsWith("/api/") || req.path.startsWith("/output/")) {
+        return next();
+      }
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
