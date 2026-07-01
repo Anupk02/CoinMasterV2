@@ -60,6 +60,15 @@ interface LogEntry {
   message: string;
 }
 
+const resolveUrl = (url: string): string => {
+  const base = (import.meta as any).env?.BASE_URL || "/";
+  if (url.startsWith("/")) {
+    const normalizedBase = base.endsWith("/") ? base.slice(0, -1) : base;
+    return `${normalizedBase}${url}`;
+  }
+  return url;
+};
+
 export default function App() {
   // Application State
   const [status, setStatus] = useState<string>("Idle");
@@ -146,11 +155,11 @@ export default function App() {
     checkSystemHealth();
     
     // Initial fetch of lists
-    fetch("/output/last_trending.json")
+    fetch(resolveUrl("/output/last_trending.json"))
       .then(res => (res.ok ? res.json() : []))
       .then(data => setCoinsList(Array.isArray(data) ? data : []))
       .catch(() => {});
-    fetch("/output/generated_messages.json")
+    fetch(resolveUrl("/output/generated_messages.json"))
       .then(res => (res.ok ? res.json() : []))
       .then(data => setMessagesList(Array.isArray(data) ? data : []))
       .catch(() => {});
@@ -160,11 +169,11 @@ export default function App() {
       fetchStats();
       fetchLogs();
       // Poll data lists to keep them synchronized
-      fetch("/output/last_trending.json")
+      fetch(resolveUrl("/output/last_trending.json"))
         .then(res => (res.ok ? res.json() : []))
         .then(data => setCoinsList(Array.isArray(data) ? data : []))
         .catch(() => {});
-      fetch("/output/generated_messages.json")
+      fetch(resolveUrl("/output/generated_messages.json"))
         .then(res => (res.ok ? res.json() : []))
         .then(data => setMessagesList(Array.isArray(data) ? data : []))
         .catch(() => {});
@@ -213,7 +222,7 @@ export default function App() {
   // Fetch Current logs
   const fetchLogs = async () => {
     try {
-      const res = await fetch("/api/logs");
+      const res = await fetch(resolveUrl("/api/logs"));
       if (res.ok) {
         const data = await res.json();
         setLogsList(data.logs || []);
@@ -224,7 +233,7 @@ export default function App() {
   // Fetch Session details
   const fetchSessionDetails = async () => {
     try {
-      const res = await fetch("/api/get-session");
+      const res = await fetch(resolveUrl("/api/get-session"));
       if (res.ok) {
         const data = await res.json();
         setSessionExists(data.exists);
@@ -236,7 +245,7 @@ export default function App() {
   // Fetch Status Stats
   const fetchStats = async () => {
     try {
-      const res = await fetch("/api/status");
+      const res = await fetch(resolveUrl("/api/status"));
       if (res.ok) {
         const data = await res.json();
         setStatus(data.status);
@@ -258,7 +267,7 @@ export default function App() {
   const checkSystemHealth = async () => {
     setIsCheckingSystem(true);
     try {
-      const res = await fetch("/api/check-system");
+      const res = await fetch(resolveUrl("/api/check-system"));
       if (res.ok) {
         const data = await res.json();
         setSystemCheckResult(data);
@@ -291,12 +300,12 @@ export default function App() {
   // Lazy Load Data lists based on Active Tab
   useEffect(() => {
     if (activeTab === "coins") {
-      fetch("/output/last_trending.json")
+      fetch(resolveUrl("/output/last_trending.json"))
         .then(res => (res.ok ? res.json() : []))
         .then(data => setCoinsList(Array.isArray(data) ? data : []))
         .catch(() => setCoinsList([]));
     } else if (activeTab === "comments" || activeTab === "reports") {
-      fetch("/output/generated_messages.json")
+      fetch(resolveUrl("/output/generated_messages.json"))
         .then(res => (res.ok ? res.json() : []))
         .then(data => setMessagesList(Array.isArray(data) ? data : []))
         .catch(() => setMessagesList([]));
@@ -326,7 +335,7 @@ export default function App() {
   const runCommand = async (endpoint: string, pendingKey: keyof typeof isPending) => {
     setIsPending(prev => ({ ...prev, [pendingKey]: true }));
     try {
-      const res = await fetch(endpoint, { method: "POST" });
+      const res = await fetch(resolveUrl(endpoint), { method: "POST" });
       const data = await res.json();
       fetchStats();
       fetchLogs();
@@ -345,7 +354,7 @@ export default function App() {
     if (!sessionJson.trim()) return;
     setIsPending(prev => ({ ...prev, login: true }));
     try {
-      const res = await fetch("/api/save-session", {
+      const res = await fetch(resolveUrl("/api/save-session"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ stateJson: sessionJson })
@@ -375,7 +384,7 @@ export default function App() {
     setLoginStep("authenticating");
     setLoginStatusMessage("Initializing secure browser, navigating to CoinMarketCap and entering credentials...");
     try {
-      const res = await fetch("/api/start-login", {
+      const res = await fetch(resolveUrl("/api/start-login"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password })
@@ -414,7 +423,7 @@ export default function App() {
     setLoginStep("authenticating");
     setLoginStatusMessage("Submitting 6-digit code and verifying active session, please wait...");
     try {
-      const res = await fetch("/api/submit-otp", {
+      const res = await fetch(resolveUrl("/api/submit-otp"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ otp: otpCode })
@@ -445,7 +454,7 @@ export default function App() {
   // Cancel login sequence
   const handleCancelLogin = async () => {
     try {
-      await fetch("/api/cancel-login", { method: "POST" });
+      await fetch(resolveUrl("/api/cancel-login"), { method: "POST" });
     } catch (_) {}
     setLoginStep("idle");
     setLoginStatusMessage("");
@@ -465,7 +474,7 @@ export default function App() {
   const handleRetrySingle = async (symbol: string) => {
     setIndividualLoading(prev => ({ ...prev, [symbol]: "retry" }));
     try {
-      const res = await fetch("/api/retry-single", {
+      const res = await fetch(resolveUrl("/api/retry-single"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol })
@@ -487,7 +496,7 @@ export default function App() {
   // Toggle runMode state
   const handleToggleRunMode = async (mode: string) => {
     try {
-      const res = await fetch("/api/set-run-mode", {
+      const res = await fetch(resolveUrl("/api/set-run-mode"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode })
@@ -1585,7 +1594,7 @@ export default function App() {
                       </p>
                     </div>
                     <a
-                      href="/api/download/trending_coins.csv"
+                      href={resolveUrl("/api/download/trending_coins.csv")}
                       className="mt-4 w-full py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:text-white transition"
                     >
                       <Download className="h-3.5 w-3.5 text-blue-400" /> Download CSV
@@ -1603,7 +1612,7 @@ export default function App() {
                       </p>
                     </div>
                     <a
-                      href="/api/download/generated_comments.csv"
+                      href={resolveUrl("/api/download/generated_comments.csv")}
                       className="mt-4 w-full py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:text-white transition"
                     >
                       <Download className="h-3.5 w-3.5 text-purple-400" /> Download CSV
@@ -1621,7 +1630,7 @@ export default function App() {
                       </p>
                     </div>
                     <a
-                      href="/api/download/post_submissions.csv"
+                      href={resolveUrl("/api/download/post_submissions.csv")}
                       className="mt-4 w-full py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:text-white transition"
                     >
                       <Download className="h-3.5 w-3.5 text-emerald-400" /> Download CSV
@@ -1639,7 +1648,7 @@ export default function App() {
                       </p>
                     </div>
                     <a
-                      href="/api/download/overall_report.csv"
+                      href={resolveUrl("/api/download/overall_report.csv")}
                       className="mt-4 w-full py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:text-white transition"
                     >
                       <Download className="h-3.5 w-3.5 text-amber-400" /> Download CSV
