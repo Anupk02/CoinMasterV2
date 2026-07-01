@@ -98,6 +98,18 @@ export default function App() {
   const [coinsList, setCoinsList] = useState<Coin[]>([]);
   const [messagesList, setMessagesList] = useState<GeneratedMessage[]>([]);
 
+  // System Check State
+  const [systemCheckResult, setSystemCheckResult] = useState<{
+    playwrightInstalled: boolean;
+    browsersPath: string;
+    executablePath: string;
+    executableExists: boolean;
+    launchStatus: "success" | "failed";
+    message: string;
+    missingLibraries: string[];
+  } | null>(null);
+  const [isCheckingSystem, setIsCheckingSystem] = useState<boolean>(false);
+
   // Action Pending loaders
   const [isPending, setIsPending] = useState({
     login: false,
@@ -131,6 +143,7 @@ export default function App() {
     fetchStats();
     fetchLogs();
     fetchSessionDetails();
+    checkSystemHealth();
     
     // Initial fetch of lists
     fetch("/output/last_trending.json")
@@ -239,6 +252,40 @@ export default function App() {
         setApiStatus(data.apiStatus || { openai: false, cmc: false });
       }
     } catch (_) {}
+  };
+
+  // Run System & Playwright Environment Diagnostic Check
+  const checkSystemHealth = async () => {
+    setIsCheckingSystem(true);
+    try {
+      const res = await fetch("/api/check-system");
+      if (res.ok) {
+        const data = await res.json();
+        setSystemCheckResult(data);
+      } else {
+        setSystemCheckResult({
+          playwrightInstalled: false,
+          browsersPath: "Error",
+          executablePath: "Error",
+          executableExists: false,
+          launchStatus: "failed",
+          message: "Failed to connect to system check endpoint.",
+          missingLibraries: [],
+        });
+      }
+    } catch (err) {
+      setSystemCheckResult({
+        playwrightInstalled: false,
+        browsersPath: "Error",
+        executablePath: "Error",
+        executableExists: false,
+        launchStatus: "failed",
+        message: (err as Error).message || "Connection failed.",
+        missingLibraries: [],
+      });
+    } finally {
+      setIsCheckingSystem(false);
+    }
   };
 
   // Lazy Load Data lists based on Active Tab
@@ -518,7 +565,176 @@ export default function App() {
 
       {/* DASHBOARD CONTENT BODY */}
       <main className="flex-1 p-6 space-y-6 max-w-[1600px] mx-auto w-full">
-        
+
+        {/* SYSTEM ENVIRONMENT DIAGNOSTICS CARD */}
+        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl transition-all duration-350 hover:border-slate-700/80">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4 mb-4">
+            <div className="flex items-center gap-3">
+              <span className={`p-2 rounded-lg border flex items-center justify-center ${
+                systemCheckResult?.success
+                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                  : "bg-red-500/10 text-red-400 border-red-500/20"
+              }`}>
+                <Activity className="h-5 w-5" />
+              </span>
+              <div>
+                <h2 className="font-bold text-white tracking-tight text-base flex items-center gap-2">
+                  System Environment Diagnostics
+                  {isCheckingSystem ? (
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin text-slate-400" />
+                  ) : systemCheckResult?.success ? (
+                    <span className="text-xs bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20 font-medium">
+                      Healthy
+                    </span>
+                  ) : (
+                    <span className="text-xs bg-red-500/10 text-red-400 px-2 py-0.5 rounded border border-red-500/20 font-medium">
+                      Issue Detected
+                    </span>
+                  )}
+                </h2>
+                <p className="text-xs text-slate-400">Verifies backend browser runtimes, executable existence, and system libraries</p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={checkSystemHealth}
+                disabled={isCheckingSystem}
+                className="px-3.5 py-1.5 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-lg text-xs text-slate-300 font-semibold flex items-center gap-1.5 transition disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isCheckingSystem ? "animate-spin" : ""}`} />
+                Re-Run Diagnostics
+              </button>
+
+              {runMode === "Real Browser" ? (
+                <button
+                  onClick={() => handleToggleRunMode("Simulated Browser")}
+                  className="px-3.5 py-1.5 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 rounded-lg text-xs text-blue-400 font-semibold transition"
+                >
+                  Switch to Simulated Mode
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleToggleRunMode("Real Browser")}
+                  className="px-3.5 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 rounded-lg text-xs text-emerald-400 font-semibold transition"
+                >
+                  Activate Real Browser
+                </button>
+              )}
+            </div>
+          </div>
+
+          {!systemCheckResult ? (
+            <div className="py-6 flex flex-col items-center justify-center text-slate-400 space-y-2">
+              <RefreshCw className="h-6 w-6 animate-spin text-blue-500" />
+              <p className="text-xs">Proactively querying system dependencies check...</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* SUB-CHECKS COLUMN */}
+              <div className="space-y-3 border-r border-slate-800/60 pr-6">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Checklist</h3>
+                
+                {/* CHECK 1 */}
+                <div className="flex items-start gap-2.5">
+                  {systemCheckResult.playwrightInstalled ? (
+                    <span className="p-1 bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/20 mt-0.5">
+                      <CheckCircle className="h-3.5 w-3.5" />
+                    </span>
+                  ) : (
+                    <span className="p-1 bg-red-500/10 text-red-400 rounded-full border border-red-500/20 mt-0.5">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                    </span>
+                  )}
+                  <div>
+                    <h4 className="text-xs font-semibold text-white font-mono">Playwright</h4>
+                    <p className="text-[10px] text-slate-400">
+                      {systemCheckResult.playwrightInstalled ? "Framework is installed and loaded" : "Failed to load playwright"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* CHECK 2 */}
+                <div className="flex items-start gap-2.5">
+                  {systemCheckResult.executableExists ? (
+                    <span className="p-1 bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/20 mt-0.5">
+                      <CheckCircle className="h-3.5 w-3.5" />
+                    </span>
+                  ) : (
+                    <span className="p-1 bg-red-500/10 text-red-400 rounded-full border border-red-500/20 mt-0.5">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                    </span>
+                  )}
+                  <div>
+                    <h4 className="text-xs font-semibold text-white font-mono">Chromium Binary</h4>
+                    <p className="text-[10px] text-slate-400">
+                      {systemCheckResult.executableExists ? "Executable exists on disk" : "No executable found at path"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* CHECK 3 */}
+                <div className="flex items-start gap-2.5">
+                  {systemCheckResult.launchStatus === "success" ? (
+                    <span className="p-1 bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/20 mt-0.5">
+                      <CheckCircle className="h-3.5 w-3.5" />
+                    </span>
+                  ) : (
+                    <span className="p-1 bg-amber-500/10 text-amber-400 rounded-full border border-amber-500/20 mt-0.5">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                    </span>
+                  )}
+                  <div>
+                    <h4 className="text-xs font-semibold text-white font-mono">Shared OS Libraries</h4>
+                    <p className="text-[10px] text-slate-400">
+                      {systemCheckResult.launchStatus === "success" ? "All OS dependencies satisfied" : "Missing shared libraries detected"}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* DETAILED ENVIRONMENT COLUMN */}
+              <div className="md:col-span-2 space-y-3 flex flex-col justify-between">
+                <div>
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Environment Details</h3>
+                  <div className="bg-slate-950 rounded-xl p-3 border border-slate-850 space-y-2 text-[11px] font-mono leading-relaxed">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                      <span className="text-slate-500">PLAYWRIGHT_BROWSERS_PATH:</span>
+                      <span className="text-slate-300 truncate max-w-sm">{systemCheckResult.browsersPath}</span>
+                    </div>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                      <span className="text-slate-500">Executable Path:</span>
+                      <span className="text-slate-300 truncate max-w-sm" title={systemCheckResult.executablePath}>{systemCheckResult.executablePath}</span>
+                    </div>
+                    <div className="border-t border-slate-900 pt-2 flex flex-col gap-1">
+                      <span className="text-slate-500">Verification Result:</span>
+                      <span className={`font-semibold ${systemCheckResult.success ? "text-emerald-400" : "text-amber-400"}`}>
+                        {systemCheckResult.message}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* HELP BANNER FOR ACTIONABLE FIX */}
+                {systemCheckResult.missingLibraries.length > 0 && (
+                  <div className="p-3 bg-amber-500/5 border border-amber-500/15 rounded-xl flex items-start gap-2.5 text-[10px] text-slate-400">
+                    <AlertTriangle className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="font-semibold text-amber-400">Actionable Resolution:</p>
+                      <p>
+                        We detected missing shared libraries in this sandboxed preview container environment (such as <code className="text-amber-300">{systemCheckResult.missingLibraries.join(", ")}</code>). We have fully configured a <code className="text-blue-400">nixpacks.toml</code> at the root of the project to automatically pre-install these OS dependencies upon your production/Railway deployment!
+                      </p>
+                      <p>
+                        To continue developing in AI Studio sandbox seamlessly, we suggest switching to <strong>Simulated Browser Mode</strong> (using the button above).
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+
         {/* ROW 1: ACTIONS, SIMULATOR, SESSION */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           

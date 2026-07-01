@@ -1646,6 +1646,76 @@ app.post("/api/set-run-mode", (req, res) => {
   res.json({ success: true, runMode });
 });
 
+// 4.6. Check system dependencies & Playwright health
+app.get("/api/check-system", async (req, res) => {
+  try {
+    const playwrightInstalled = typeof chromium !== "undefined";
+    const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH || "Not configured";
+    
+    let executablePath = "N/A";
+    let executableExists = false;
+    let launchStatus: "success" | "failed" = "failed";
+    let message = "";
+    let missingLibraries: string[] = [];
+
+    if (playwrightInstalled) {
+      try {
+        executablePath = chromium.executablePath();
+        executableExists = fs.existsSync(executablePath);
+      } catch (err) {
+        message = `Failed to get executable path: ${(err as Error).message}`;
+      }
+    }
+
+    if (executableExists) {
+      try {
+        // Run a quick version check on the chromium binary
+        // If system dependencies are missing, this will fail with an error detailing the missing library
+        const output = execSync(`"${executablePath}" --version`, { stdio: "pipe", timeout: 5000 }).toString().trim();
+        launchStatus = "success";
+        message = `Chromium binary verified successfully: ${output}`;
+      } catch (err) {
+        const errMsg = (err as Error).message || "";
+        const stderr = (err as any).stderr?.toString() || "";
+        const combinedError = `${errMsg} ${stderr}`;
+        
+        launchStatus = "failed";
+        
+        // Extract missing shared libraries from error
+        const libPattern = /lib[a-zA-Z0-9\.\-\_]+\.so\.[0-9]+/g;
+        const foundLibs = combinedError.match(libPattern) || [];
+        missingLibraries = Array.from(new Set(foundLibs));
+
+        if (missingLibraries.length > 0) {
+          message = `Missing required shared libraries: ${missingLibraries.join(", ")}`;
+        } else if (combinedError.includes("cannot open shared object file")) {
+          message = `Shared library error: ${combinedError}`;
+        } else {
+          message = `Launch verification failed: ${combinedError.substring(0, 300)}`;
+        }
+      }
+    } else {
+      message = "Chromium executable is not present on disk. It might need to be downloaded/installed.";
+    }
+
+    res.json({
+      success: launchStatus === "success",
+      playwrightInstalled,
+      browsersPath,
+      executablePath,
+      executableExists,
+      launchStatus,
+      message,
+      missingLibraries,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: (error as Error).message,
+    });
+  }
+});
+
 // 5. Check login session (Runs real headless Playwright against CoinMarketCap)
 app.post("/api/check-login", async (req, res) => {
   addLog("info", "Checking live login session validity on CoinMarketCap using Playwright...");
