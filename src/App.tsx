@@ -722,10 +722,10 @@ export default function App() {
                     <div className="space-y-1">
                       <p className="font-semibold text-amber-400">Actionable Resolution:</p>
                       <p>
-                        We detected missing shared libraries in this sandboxed preview container environment (such as <code className="text-amber-300">{systemCheckResult.missingLibraries.join(", ")}</code>). We have fully configured a <code className="text-blue-400">nixpacks.toml</code> at the root of the project to automatically pre-install these OS dependencies upon your production/Railway deployment!
+                        Detected missing shared libraries in this local sandbox/container environment (such as <code className="text-amber-300">{systemCheckResult.missingLibraries.join(", ")}</code>). We have fully configured a <code className="text-blue-400">nixpacks.toml</code> and <code className="text-blue-400">railway.toml</code> at the root of the project to automatically pre-install these OS dependencies upon your production, AWS, or cloud deployment!
                       </p>
                       <p>
-                        To continue developing in AI Studio sandbox seamlessly, we suggest switching to <strong>Simulated Browser Mode</strong> (using the button above).
+                        To continue testing and development seamlessly, we suggest switching to <strong>Simulated Browser Mode</strong> (using the button above).
                       </p>
                     </div>
                   </div>

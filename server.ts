@@ -188,7 +188,7 @@ async function launchBrowserResilient(options: any = {}): Promise<any> {
     ) {
       runMode = "Simulated Browser";
       throw new Error(
-        "Playwright requires missing system shared libraries (like libglib-2.0.so.0) which are not pre-installed in the sandboxed AI Studio preview container (root/sudo access is not available to install them). However, these packages are fully configured to be installed automatically in production/Railway via our nixpacks.toml configuration!"
+        "Playwright requires missing system shared libraries (like libglib-2.0.so.0) which are not pre-installed in this environment (root/sudo access is required to install them). However, these packages are fully configured to be installed automatically in production/AWS/Railway environments via our nixpacks.toml/railway.toml configurations!"
       );
     }
     if (
@@ -2284,7 +2284,7 @@ async function executeGenerateMessages(): Promise<number> {
         apiKey: geminiKey,
         httpOptions: {
           headers: {
-            'User-Agent': 'aistudio-build',
+            'User-Agent': 'custom-comment-generator',
           }
         }
       });
